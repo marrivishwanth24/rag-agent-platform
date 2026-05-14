@@ -2,7 +2,7 @@
 
 A production full-stack AI agent system for semantic document search and conversational Q&A, built with the **Claude API**, **FastAPI**, **pgvector**, and **React**.
 
-**Live Demo:** [your-demo-url]
+**Status:** Deployed on AWS EC2 — contact for access
 
 ---
 
