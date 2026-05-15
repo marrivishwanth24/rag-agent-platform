@@ -2,7 +2,10 @@
 
 A production full-stack AI agent system for semantic document search and conversational Q&A, built with the **Claude API**, **FastAPI**, **pgvector**, and **React**.
 
-**Status:** Deployed on AWS EC2 — contact for access
+**Status:** 
+🤖 RAG Agent Platform
+Live Demo: https://rag-frontend-topaz.vercel.app
+API Docs: https://rag-agent-platform-production.up.railway.app/docs
 
 ---
 
