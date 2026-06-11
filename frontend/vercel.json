@@ -1,1 +1,9 @@
-{ "builds": [{ "src": "package.json", "use": "@vercel/static-build", "config": { "distDir": "build" } }], "env": { "CI": "false" } }
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "build",
+  "installCommand": "npm install",
+  "framework": "create-react-app",
+  "env": {
+    "CI": "false"
+  }
+}
