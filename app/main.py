@@ -13,12 +13,10 @@ from pydantic import BaseModel
 from app.ingestion import ingest_document
 from app.retrieval import retrieve_context, list_documents
 from app.agent import stream_agent_response
-from app.auth import (
-    create_access_token,
-    get_current_user,
-    hash_password,
-    verify_password,
-)
+from app.auth import create_access_token, hash_password, verify_password
+
+# Shared user ID for all public (unauthenticated) requests
+PUBLIC_USER_ID = "00000000-0000-0000-0000-000000000000"
 
 
 @asynccontextmanager
@@ -103,27 +101,22 @@ async def login(
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
-    user: dict = Depends(get_current_user),
 ):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files supported")
     pool = get_pool(request)
     contents = await file.read()
-    doc_id = await ingest_document(contents, file.filename, user["user_id"], pool)
+    doc_id = await ingest_document(contents, file.filename, PUBLIC_USER_ID, pool)
     return {"document_id": doc_id, "filename": file.filename, "status": "ingested"}
 
 
 @app.post("/query")
-async def query_agent(
-    body: QueryRequest,
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
+async def query_agent(body: QueryRequest, request: Request):
     pool = get_pool(request)
     context_chunks = await retrieve_context(
         query=body.question,
         document_ids=body.document_ids,
-        user_id=user["user_id"],
+        user_id=PUBLIC_USER_ID,
         pool=pool,
     )
     return StreamingResponse(
@@ -133,10 +126,7 @@ async def query_agent(
 
 
 @app.get("/documents")
-async def list_user_documents(
-    request: Request,
-    user: dict = Depends(get_current_user),
-):
+async def list_user_documents(request: Request):
     pool = get_pool(request)
-    docs = await list_documents(user["user_id"], pool)
-    return {"documents": docs, "user_id": user["user_id"]}
+    docs = await list_documents(PUBLIC_USER_ID, pool)
+    return {"documents": docs}
