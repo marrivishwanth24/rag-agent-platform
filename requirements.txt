@@ -1,0 +1,15 @@
+uvicorn
+fastapi
+anthropic
+asyncpg
+pypdf
+passlib[bcrypt]
+PyJWT
+python-multipart
+pydantic
+python-dotenv
+aiofiles
+voyageai
+pytest
+pytest-asyncio
+httpx

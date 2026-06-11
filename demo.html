@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>RAG Agent Demo</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; background: #0a0a0b; color: #f0f0f0; }
+  h1 { color: #a8ff78; }
+  input[type="text"] { width: 70%; padding: 10px; font-size: 16px; background: #1a1a1a; border: 1px solid #333; color: white; border-radius: 4px; }
+  button { padding: 10px 20px; background: #a8ff78; color: black; border: none; font-weight: bold; border-radius: 4px; cursor: pointer; font-size: 16px; margin-left: 8px; }
+  #response { margin-top: 20px; padding: 20px; background: #1a1a1a; border-radius: 8px; min-height: 100px; white-space: pre-wrap; line-height: 1.6; border: 1px solid #333; font-size: 15px; }
+  #status { color: #a8ff78; font-size: 13px; margin-top: 8px; }
+  #uploadStatus { color: #a8ff78; font-size: 13px; margin-top: 8px; }
+  .section { margin-bottom: 30px; padding: 20px; background: #111; border-radius: 8px; border: 1px solid #222; }
+</style>
+</head>
+<body>
+<h1>🤖 RAG Agent Platform</h1>
+<p style="color:#888">Powered by Claude API + pgvector + FastAPI</p>
+
+<div class="section">
+  <h3>📄 Upload PDF</h3>
+  <input type="file" id="pdfFile" accept=".pdf">
+  <button onclick="uploadPDF()">Upload</button>
+  <div id="uploadStatus"></div>
+</div>
+
+<div class="section">
+  <h3>💬 Ask Claude</h3>
+  <input type="text" id="question" placeholder="What is this document about?" onkeypress="if(event.key==='Enter') askQuestion()">
+  <button onclick="askQuestion()">Ask</button>
+  <div id="status"></div>
+  <div id="response">Response will appear here...</div>
+</div>
+
+<script>
+async function uploadPDF() {
+  const file = document.getElementById('pdfFile').files[0];
+  if (!file) { alert('Please select a PDF file'); return; }
+  const formData = new FormData();
+  formData.append('file', file);
+  document.getElementById('uploadStatus').innerHTML = '⏳ Uploading and processing...';
+  try {
+    const res = await fetch('http://127.0.0.1:8000/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    document.getElementById('uploadStatus').innerHTML = '✅ Document ingested! ID: ' + data.document_id;
+  } catch(e) {
+    document.getElementById('uploadStatus').innerHTML = '❌ Error: ' + e.message;
+  }
+}
+
+async function askQuestion() {
+  const question = document.getElementById('question').value;
+  if (!question) { alert('Please enter a question'); return; }
+  document.getElementById('response').innerText = '';
+  document.getElementById('status').innerText = '⏳ Claude is thinking...';
+  try {
+    const res = await fetch('http://127.0.0.1:8000/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: question })
+    });
+    document.getElementById('status').innerText = '✅ Response:';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      fullText += chunk;
+      // Parse SSE format
+      const lines = fullText.split('\n');
+      let display = '';
+      for (const line of lines) {
+        if (line.startsWith('data: ') && !line.includes('[DONE]')) {
+          display += line.substring(6);
+        }
+      }
+      document.getElementById('response').innerText = display || fullText;
+    }
+    document.getElementById('status').innerText = '✅ Done!';
+  } catch(e) {
+    document.getElementById('status').innerText = '❌ Error: ' + e.message;
+  }
+}
+</script>
+</body>
+</html>
