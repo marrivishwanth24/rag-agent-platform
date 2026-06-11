@@ -101,7 +101,7 @@ async def ingest_document(
                 INSERT INTO document_chunks
                     (id, document_id, user_id, filename, page_num, chunk_text, embedding)
                 VALUES
-                    ($1, $2, $3, $4, $5, $6, $7::vector)
+                    ($1::uuid, $2, $3::uuid, $4, $5, $6, $7::vector)
                 """,
                 str(uuid.uuid4()),
                 document_id,

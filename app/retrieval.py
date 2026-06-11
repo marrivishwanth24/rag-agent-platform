@@ -44,7 +44,7 @@ async def retrieve_context(
                 SELECT chunk_text, page_num, filename,
                        1 - (embedding <=> $1::vector) AS similarity
                 FROM document_chunks
-                WHERE user_id = $2
+                WHERE user_id = $2::uuid
                   AND document_id = ANY($3::text[])
                 ORDER BY embedding <=> $1::vector
                 LIMIT $4
@@ -60,7 +60,7 @@ async def retrieve_context(
                 SELECT chunk_text, page_num, filename,
                        1 - (embedding <=> $1::vector) AS similarity
                 FROM document_chunks
-                WHERE user_id = $2
+                WHERE user_id = $2::uuid
                 ORDER BY embedding <=> $1::vector
                 LIMIT $3
                 """,
@@ -87,7 +87,7 @@ async def list_documents(user_id: str, pool: asyncpg.Pool) -> list[dict]:
             """
             SELECT document_id, filename, MAX(page_num) AS page_count
             FROM document_chunks
-            WHERE user_id = $1
+            WHERE user_id = $1::uuid
             GROUP BY document_id, filename
             ORDER BY filename
             """,
