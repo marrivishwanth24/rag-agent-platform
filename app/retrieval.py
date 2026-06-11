@@ -3,6 +3,7 @@ retrieval.py — Semantic retrieval using vector similarity
 """
 
 import os
+import uuid
 import asyncpg
 
 
@@ -37,6 +38,7 @@ async def retrieve_context(
     query_embedding = await get_embedding(query)
     embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
 
+    user_uuid = uuid.UUID(user_id)
     async with pool.acquire() as conn:
         if document_ids:
             rows = await conn.fetch(
@@ -44,13 +46,13 @@ async def retrieve_context(
                 SELECT chunk_text, page_num, filename,
                        1 - (embedding <=> $1::vector) AS similarity
                 FROM document_chunks
-                WHERE user_id = $2::uuid
+                WHERE user_id = $2
                   AND document_id = ANY($3::text[])
                 ORDER BY embedding <=> $1::vector
                 LIMIT $4
                 """,
                 embedding_str,
-                user_id,
+                user_uuid,
                 document_ids,
                 top_k,
             )
@@ -60,12 +62,12 @@ async def retrieve_context(
                 SELECT chunk_text, page_num, filename,
                        1 - (embedding <=> $1::vector) AS similarity
                 FROM document_chunks
-                WHERE user_id = $2::uuid
+                WHERE user_id = $2
                 ORDER BY embedding <=> $1::vector
                 LIMIT $3
                 """,
                 embedding_str,
-                user_id,
+                user_uuid,
                 top_k,
             )
 
@@ -82,16 +84,17 @@ async def retrieve_context(
 
 async def list_documents(user_id: str, pool: asyncpg.Pool) -> list[dict]:
     """Return distinct documents uploaded by a user."""
+    user_uuid = uuid.UUID(user_id)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT document_id, filename, MAX(page_num) AS page_count
             FROM document_chunks
-            WHERE user_id = $1::uuid
+            WHERE user_id = $1
             GROUP BY document_id, filename
             ORDER BY filename
             """,
-            user_id,
+            user_uuid,
         )
     return [
         {
