@@ -3,7 +3,8 @@ fastapi
 anthropic
 asyncpg
 pypdf
-passlib[bcrypt]
+passlib
+bcrypt
 PyJWT
 python-multipart
 pydantic
