@@ -22,10 +22,12 @@ PUBLIC_USER_ID = "00000000-0000-0000-0000-000000000000"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db_url = os.getenv("DATABASE_URL")
+    app.state.pool = None
     if db_url:
-        app.state.pool = await asyncpg.create_pool(db_url)
-    else:
-        app.state.pool = None
+        try:
+            app.state.pool = await asyncpg.create_pool(db_url)
+        except Exception as e:
+            print(f"WARNING: Could not connect to database: {e}")
     yield
     if app.state.pool:
         await app.state.pool.close()
