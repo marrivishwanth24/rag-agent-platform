@@ -19,3 +19,4 @@ frontend/build/
 
 # macOS
 .DS_Store
+.claude/
