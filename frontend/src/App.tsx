@@ -59,14 +59,20 @@ function App() {
 
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
+      let buffer = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        for (const line of chunk.split("\n")) {
-          if (line.startsWith("data: ") && !line.includes("[DONE]")) {
-            assistantMsg += line.substring(6);
+        buffer += decoder.decode(value, { stream: true });
+
+        // Split on SSE event boundary (\n\n) so newlines inside data fields are preserved
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? ""; // keep incomplete last event for next iteration
+
+        for (const event of events) {
+          if (event.startsWith("data: ") && !event.includes("[DONE]")) {
+            assistantMsg += event.substring(6);
           }
         }
         setMessages(prev => {
