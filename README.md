@@ -259,6 +259,6 @@ For a public demo tool, login friction kills adoption. A UUID stored in `localSt
 
 **Vishwanth Marri**
 - Email: marrivishwanth24@gmail.com
-- LinkedIn: linkedin.com/in/vishwanthmarri
+- LinkedIn: linkedin.com/in/vishwanthmarri/
 - GitHub: github.com/marrivishwanth24
 - Live Demo: https://rag-frontend-topaz.vercel.app
