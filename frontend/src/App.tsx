@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import ReactMarkdown from "react-markdown";
 import "./App.css";
 
 const API_URL = "https://rag-agent-platform-production.up.railway.app";
@@ -136,7 +137,11 @@ function App() {
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
             <div className="message-avatar">{msg.role === "user" ? "👤" : "🤖"}</div>
-            <div className="message-content">{msg.content}</div>
+            <div className="message-content">
+              {msg.role === "assistant"
+                ? <ReactMarkdown>{msg.content}</ReactMarkdown>
+                : msg.content}
+            </div>
           </div>
         ))}
       </main>

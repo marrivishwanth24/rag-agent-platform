@@ -146,7 +146,55 @@ body {
   border-radius: 12px;
   font-size: 14px;
   line-height: 1.75;
-  white-space: pre-wrap;
+}
+
+/* Markdown styles inside assistant bubbles */
+.message.assistant .message-content p { margin-bottom: 0.6em; }
+.message.assistant .message-content p:last-child { margin-bottom: 0; }
+.message.assistant .message-content h1,
+.message.assistant .message-content h2,
+.message.assistant .message-content h3 {
+  font-weight: 700;
+  margin: 0.8em 0 0.4em;
+  color: #F0EEE8;
+}
+.message.assistant .message-content h1 { font-size: 1.2em; }
+.message.assistant .message-content h2 { font-size: 1.1em; }
+.message.assistant .message-content h3 { font-size: 1em; }
+.message.assistant .message-content ul,
+.message.assistant .message-content ol {
+  padding-left: 1.4em;
+  margin-bottom: 0.6em;
+}
+.message.assistant .message-content li { margin-bottom: 0.25em; }
+.message.assistant .message-content code {
+  background: rgba(202,255,51,0.12);
+  color: #CAFF33;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-family: 'Menlo', 'Monaco', monospace;
+}
+.message.assistant .message-content pre {
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.message.assistant .message-content pre code {
+  background: none;
+  color: #F0EEE8;
+  padding: 0;
+  font-size: 0.82em;
+}
+.message.assistant .message-content strong { color: #fff; font-weight: 700; }
+.message.assistant .message-content blockquote {
+  border-left: 3px solid #CAFF33;
+  padding-left: 12px;
+  color: rgba(240,238,232,0.6);
+  margin: 0.6em 0;
 }
 
 .message.user .message-content {
