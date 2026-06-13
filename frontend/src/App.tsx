@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import "./App.css";
 
@@ -27,23 +27,61 @@ interface Message {
   citations?: Citation[];
 }
 
+const THINKING = "__THINKING__";
+
+function TypingIndicator() {
+  return (
+    <div className="typing-indicator">
+      <span /><span /><span />
+    </div>
+  );
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadedDocs, setUploadedDocs] = useState<{ name: string; id: string }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
   const fileRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   const documentIds = uploadedDocs.map(d => d.id);
+
+  // Auto-scroll to bottom whenever messages update
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const autoResize = () => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+  };
+
+  const resetTextarea = () => {
+    setQuestion("");
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  };
+
+  const newChat = () => {
+    setMessages([]);
+    setUploadedDocs([]);
+  };
 
   const removeDoc = (id: string) => {
     setUploadedDocs(prev => prev.filter(d => d.id !== id));
   };
 
   const uploadPDFs = async (files: File[]) => {
+    const pdfs = files.filter(f => f.name.toLowerCase().endsWith(".pdf"));
+    if (!pdfs.length) return;
     setUploading(true);
-    for (const file of files) {
+    for (const file of pdfs) {
       const formData = new FormData();
       formData.append("file", file);
       try {
@@ -58,10 +96,7 @@ function App() {
           continue;
         }
         setUploadedDocs(prev => [...prev, { name: file.name, id: data.document_id }]);
-        setMessages(prev => [...prev, {
-          role: "assistant",
-          content: `**${file.name}** uploaded and indexed.`,
-        }]);
+        setMessages(prev => [...prev, { role: "assistant", content: `**${file.name}** uploaded and indexed.` }]);
       } catch {
         setMessages(prev => [...prev, { role: "assistant", content: `Upload failed for **${file.name}**. Please check the server is running.` }]);
       }
@@ -70,12 +105,12 @@ function App() {
   };
 
   const askQuestion = async () => {
-    if (!question.trim()) return;
+    if (!question.trim() || loading) return;
     const userMsg = question;
-    setQuestion("");
+    resetTextarea();
     setMessages(prev => [...prev, { role: "user", content: userMsg }]);
     setLoading(true);
-    setMessages(prev => [...prev, { role: "assistant", content: "⏳ Thinking..." }]);
+    setMessages(prev => [...prev, { role: "assistant", content: THINKING }]);
 
     let assistantMsg = "";
     let citations: Citation[] = [];
@@ -95,9 +130,8 @@ function App() {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // Split on SSE event boundary (\n\n) so newlines inside data fields are preserved
         const events = buffer.split("\n\n");
-        buffer = events.pop() ?? ""; // keep incomplete last event for next iteration
+        buffer = events.pop() ?? "";
 
         for (const event of events) {
           if (!event.startsWith("data: ") || event.includes("[DONE]")) continue;
@@ -110,7 +144,7 @@ function App() {
         }
         setMessages(prev => {
           const updated = [...prev];
-          updated[updated.length - 1] = { role: "assistant", content: assistantMsg || "⏳ Thinking...", citations };
+          updated[updated.length - 1] = { role: "assistant", content: assistantMsg || THINKING, citations };
           return updated;
         });
       }
@@ -124,6 +158,14 @@ function App() {
     setLoading(false);
   };
 
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setDragging(true); };
+  const handleDragLeave = () => setDragging(false);
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    uploadPDFs(Array.from(e.dataTransfer.files));
+  };
+
   return (
     <div className="app">
       <header className="header">
@@ -132,7 +174,7 @@ function App() {
             <span className="logo-icon">🤖</span>
             <div>
               <div className="logo-title">RAG Agent Platform</div>
-              <div className="logo-sub">Powered by Claude API + pgvector + FastAPI</div>
+              <div className="logo-sub">Claude API · pgvector · FastAPI</div>
             </div>
           </div>
           <div className="upload-area">
@@ -143,16 +185,16 @@ function App() {
               ref={fileRef}
               style={{ display: "none" }}
               onChange={e => {
-                const files = Array.from(e.target.files ?? []);
-                if (files.length > 0) uploadPDFs(files);
+                uploadPDFs(Array.from(e.target.files ?? []));
                 e.target.value = "";
               }}
             />
-            <button
-              className="upload-btn"
-              onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-            >
+            {messages.length > 0 && (
+              <button className="new-chat-btn" onClick={newChat} title="New chat">
+                ✦ New Chat
+              </button>
+            )}
+            <button className="upload-btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
               {uploading ? "⏳ Processing..." : "📄 Upload PDF"}
             </button>
           </div>
@@ -169,12 +211,17 @@ function App() {
         )}
       </header>
 
-      <main className="chat-area">
+      <main
+        className={`chat-area${dragging ? " dragging" : ""}`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         {messages.length === 0 && (
           <div className="empty-state">
             <div className="empty-icon">💬</div>
             <div className="empty-title">Upload a PDF and start asking questions</div>
-            <div className="empty-sub">Powered by Claude AI — ask anything about your documents</div>
+            <div className="empty-sub">Drag a PDF anywhere onto this page, or click Upload PDF</div>
             <div className="example-questions">
               <div className="eq-label">Try asking:</div>
               {[
@@ -187,14 +234,17 @@ function App() {
             </div>
           </div>
         )}
+
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
             <div className="message-avatar">{msg.role === "user" ? "👤" : "🤖"}</div>
             <div className="message-body">
               <div className="message-content">
-                {msg.role === "assistant"
-                  ? <ReactMarkdown>{msg.content}</ReactMarkdown>
-                  : msg.content}
+                {msg.content === THINKING
+                  ? <TypingIndicator />
+                  : msg.role === "assistant"
+                    ? <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    : msg.content}
               </div>
               {msg.citations && msg.citations.length > 0 && (
                 <div className="citations">
@@ -212,21 +262,35 @@ function App() {
             </div>
           </div>
         ))}
+
+        {dragging && (
+          <div className="drop-overlay">
+            <div className="drop-label">📄 Drop PDFs to upload</div>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
       </main>
 
       <footer className="input-area">
         <div className="input-inner">
-          <input
+          <textarea
+            ref={textareaRef}
             className="chat-input"
-            type="text"
-            placeholder="Ask a question about your document..."
+            rows={1}
+            placeholder="Ask a question… (Shift+Enter for new line)"
             value={question}
-            onChange={e => setQuestion(e.target.value)}
-            onKeyPress={e => e.key === "Enter" && !loading && askQuestion()}
+            onChange={e => { setQuestion(e.target.value); autoResize(); }}
+            onKeyDown={e => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                askQuestion();
+              }
+            }}
             disabled={loading}
           />
           <button className="send-btn" onClick={askQuestion} disabled={loading || !question.trim()}>
-            {loading ? "⏳" : "Send →"}
+            {loading ? <span className="send-spinner" /> : "↑"}
           </button>
         </div>
       </footer>
