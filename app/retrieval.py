@@ -1,44 +1,31 @@
 """
-retrieval.py — Semantic retrieval using vector similarity
+retrieval.py — Semantic retrieval using vector similarity + reranking
 """
 
 import os
 import uuid
 import asyncpg
+import voyageai
 
 
 async def get_embedding(text: str) -> list[float]:
-    """
-    Same model as ingestion — MUST match exactly.
-    Uses input_type='query' so Voyage AI optimises for the query side.
-    """
-    import voyageai
     client = voyageai.AsyncClient(api_key=os.getenv("VOYAGE_API_KEY"))
-    result = await client.embed(
-        [text],
-        model="voyage-3.5",
-        input_type="query",
-    )
+    result = await client.embed([text], model="voyage-3.5", input_type="query")
     return result.embeddings[0]
 
 
-async def retrieve_context(
+async def _vector_search(
     query: str,
     document_ids: list[str],
     user_id: str,
     pool: asyncpg.Pool,
-    top_k: int = 5,
+    limit: int,
 ) -> list[dict]:
-    """
-    Semantic retrieval pipeline:
-    1. Embed the query with the same model used during ingestion
-    2. Run cosine similarity search in pgvector
-    3. Return top_k most semantically similar chunks
-    """
-    query_embedding = await get_embedding(query)
-    embedding_str = "[" + ",".join(map(str, query_embedding)) + "]"
-
+    """Initial ANN retrieval from pgvector."""
+    embedding = await get_embedding(query)
+    embedding_str = "[" + ",".join(map(str, embedding)) + "]"
     user_uuid = uuid.UUID(user_id)
+
     async with pool.acquire() as conn:
         if document_ids:
             rows = await conn.fetch(
@@ -51,10 +38,7 @@ async def retrieve_context(
                 ORDER BY embedding <=> $1::vector
                 LIMIT $4
                 """,
-                embedding_str,
-                user_uuid,
-                document_ids,
-                top_k,
+                embedding_str, user_uuid, document_ids, limit,
             )
         else:
             rows = await conn.fetch(
@@ -66,9 +50,7 @@ async def retrieve_context(
                 ORDER BY embedding <=> $1::vector
                 LIMIT $3
                 """,
-                embedding_str,
-                user_uuid,
-                top_k,
+                embedding_str, user_uuid, limit,
             )
 
     return [
@@ -80,6 +62,46 @@ async def retrieve_context(
         }
         for row in rows
     ]
+
+
+async def _rerank(query: str, chunks: list[dict], top_k: int) -> list[dict]:
+    """Rerank candidates with Voyage AI cross-encoder, normalize scores to [0,1]."""
+    client = voyageai.AsyncClient(api_key=os.getenv("VOYAGE_API_KEY"))
+    result = await client.rerank(
+        query=query,
+        documents=[c["chunk_text"] for c in chunks],
+        model="rerank-2",
+        top_k=top_k,
+    )
+
+    scores = [r.relevance_score for r in result.results]
+    lo, hi = min(scores), max(scores)
+    span = hi - lo if hi != lo else 1.0
+
+    reranked = []
+    for r in result.results:
+        chunk = dict(chunks[r.index])
+        chunk["similarity"] = (r.relevance_score - lo) / span
+        reranked.append(chunk)
+    return reranked
+
+
+async def retrieve_context(
+    query: str,
+    document_ids: list[str],
+    user_id: str,
+    pool: asyncpg.Pool,
+    top_k: int = 5,
+) -> list[dict]:
+    """
+    Two-stage retrieval:
+    1. Fetch top_k * 3 candidates from pgvector (fast ANN)
+    2. Rerank with Voyage AI cross-encoder (accurate), return top_k
+    """
+    candidates = await _vector_search(query, document_ids, user_id, pool, limit=top_k * 3)
+    if not candidates:
+        return []
+    return await _rerank(query, candidates, top_k=top_k)
 
 
 async def list_documents(user_id: str, pool: asyncpg.Pool) -> list[dict]:
