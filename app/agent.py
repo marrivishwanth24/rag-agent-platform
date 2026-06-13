@@ -1,4 +1,5 @@
 import anthropic
+import json
 import os
 from typing import AsyncGenerator
 
@@ -42,6 +43,17 @@ Please answer based on the context above."""
         async for text in stream.text_stream:
             yield f"data: {text}\n\n"
 
+    # Deduplicate sources by filename+page, keep highest similarity per pair
+    seen: dict[tuple, float] = {}
+    for c in context_chunks:
+        key = (c["filename"], c.get("page_num", 0))
+        if key not in seen or c["similarity"] > seen[key]:
+            seen[key] = c["similarity"]
+    sources = [
+        {"filename": fn, "page_num": pg, "similarity": round(sim, 2)}
+        for (fn, pg), sim in sorted(seen.items(), key=lambda x: -x[1])
+    ]
+    yield f"data: [CITATIONS]{json.dumps(sources)}\n\n"
     yield "data: [DONE]\n\n"
 
 

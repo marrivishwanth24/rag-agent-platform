@@ -15,9 +15,16 @@ function getSessionId(): string {
 
 const SESSION_ID = getSessionId();
 
+interface Citation {
+  filename: string;
+  page_num: number;
+  similarity: number;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
+  citations?: Citation[];
 }
 
 function App() {
@@ -71,6 +78,7 @@ function App() {
     setMessages(prev => [...prev, { role: "assistant", content: "⏳ Thinking..." }]);
 
     let assistantMsg = "";
+    let citations: Citation[] = [];
     try {
       const res = await fetch(`${API_URL}/query`, {
         method: "POST",
@@ -92,13 +100,17 @@ function App() {
         buffer = events.pop() ?? ""; // keep incomplete last event for next iteration
 
         for (const event of events) {
-          if (event.startsWith("data: ") && !event.includes("[DONE]")) {
-            assistantMsg += event.substring(6);
+          if (!event.startsWith("data: ") || event.includes("[DONE]")) continue;
+          const payload = event.substring(6);
+          if (payload.startsWith("[CITATIONS]")) {
+            citations = JSON.parse(payload.substring(11));
+          } else {
+            assistantMsg += payload;
           }
         }
         setMessages(prev => {
           const updated = [...prev];
-          updated[updated.length - 1] = { role: "assistant", content: assistantMsg || "⏳ Thinking..." };
+          updated[updated.length - 1] = { role: "assistant", content: assistantMsg || "⏳ Thinking...", citations };
           return updated;
         });
       }
@@ -178,10 +190,25 @@ function App() {
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
             <div className="message-avatar">{msg.role === "user" ? "👤" : "🤖"}</div>
-            <div className="message-content">
-              {msg.role === "assistant"
-                ? <ReactMarkdown>{msg.content}</ReactMarkdown>
-                : msg.content}
+            <div className="message-body">
+              <div className="message-content">
+                {msg.role === "assistant"
+                  ? <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  : msg.content}
+              </div>
+              {msg.citations && msg.citations.length > 0 && (
+                <div className="citations">
+                  <span className="citations-label">Sources</span>
+                  {msg.citations.map((c, j) => (
+                    <span key={j} className="citation-chip">
+                      <span className="citation-icon">📄</span>
+                      <span className="citation-name" title={c.filename}>{c.filename.replace(/\.pdf$/i, "")}</span>
+                      <span className="citation-page">p.{c.page_num}</span>
+                      <span className="citation-score">{Math.round(c.similarity * 100)}%</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ))}
