@@ -4,6 +4,17 @@ import "./App.css";
 
 const API_URL = "https://rag-agent-platform-production.up.railway.app";
 
+function getSessionId(): string {
+  let id = localStorage.getItem("rag_session_id");
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("rag_session_id", id);
+  }
+  return id;
+}
+
+const SESSION_ID = getSessionId();
+
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -23,7 +34,11 @@ function App() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await fetch(`${API_URL}/upload`, { method: "POST", body: formData });
+      const res = await fetch(`${API_URL}/upload`, {
+        method: "POST",
+        headers: { "X-Session-ID": SESSION_ID },
+        body: formData,
+      });
       const data = await res.json();
       if (!res.ok) {
         setMessages(prev => [...prev, { role: "assistant", content: `Upload failed: ${data.detail}` }]);
@@ -53,7 +68,7 @@ function App() {
     try {
       const res = await fetch(`${API_URL}/query`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Session-ID": SESSION_ID },
         body: JSON.stringify({ question: userMsg, document_ids: documentIds }),
       });
 

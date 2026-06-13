@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -15,8 +16,16 @@ from app.retrieval import retrieve_context, list_documents
 from app.agent import stream_agent_response
 from app.auth import create_access_token, hash_password, verify_password
 
-# Shared user ID for all public (unauthenticated) requests
-PUBLIC_USER_ID = "00000000-0000-0000-0000-000000000000"
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000000"
+
+
+def get_session_id(request: Request) -> str:
+    sid = request.headers.get("X-Session-ID", "")
+    return sid if _UUID_RE.match(sid) else FALLBACK_USER_ID
 
 
 @asynccontextmanager
@@ -108,7 +117,8 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Only PDF files supported")
     pool = get_pool(request)
     contents = await file.read()
-    doc_id = await ingest_document(contents, file.filename, PUBLIC_USER_ID, pool)
+    session_id = get_session_id(request)
+    doc_id = await ingest_document(contents, file.filename, session_id, pool)
     return {"document_id": doc_id, "filename": file.filename, "status": "ingested"}
 
 
@@ -118,7 +128,7 @@ async def query_agent(body: QueryRequest, request: Request):
     context_chunks = await retrieve_context(
         query=body.question,
         document_ids=body.document_ids,
-        user_id=PUBLIC_USER_ID,
+        user_id=get_session_id(request),
         pool=pool,
     )
     return StreamingResponse(
@@ -130,5 +140,5 @@ async def query_agent(body: QueryRequest, request: Request):
 @app.get("/documents")
 async def list_user_documents(request: Request):
     pool = get_pool(request)
-    docs = await list_documents(PUBLIC_USER_ID, pool)
+    docs = await list_documents(get_session_id(request), pool)
     return {"documents": docs}
