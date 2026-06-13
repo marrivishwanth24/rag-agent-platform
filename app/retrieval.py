@@ -47,7 +47,7 @@ async def retrieve_context(
                        1 - (embedding <=> $1::vector) AS similarity
                 FROM document_chunks
                 WHERE user_id = $2
-                  AND document_id = ANY($3::text[])
+                  AND document_id::text = ANY($3)
                 ORDER BY embedding <=> $1::vector
                 LIMIT $4
                 """,
