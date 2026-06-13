@@ -24,10 +24,15 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
-  const [documentIds, setDocumentIds] = useState<string[]>([]);
+  const [uploadedDocs, setUploadedDocs] = useState<{ name: string; id: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const documentIds = uploadedDocs.map(d => d.id);
+
+  const removeDoc = (id: string) => {
+    setUploadedDocs(prev => prev.filter(d => d.id !== id));
+  };
 
   const uploadPDFs = async (files: File[]) => {
     setUploading(true);
@@ -45,8 +50,7 @@ function App() {
           setMessages(prev => [...prev, { role: "assistant", content: `Upload failed for **${file.name}**: ${data.detail}` }]);
           continue;
         }
-        setUploadedFiles(prev => [...prev, file.name]);
-        setDocumentIds(prev => [...prev, data.document_id]);
+        setUploadedDocs(prev => [...prev, { name: file.name, id: data.document_id }]);
         setMessages(prev => [...prev, {
           role: "assistant",
           content: `**${file.name}** uploaded and indexed.`,
@@ -139,11 +143,18 @@ function App() {
             >
               {uploading ? "⏳ Processing..." : "📄 Upload PDF"}
             </button>
-            {uploadedFiles.map(name => (
-              <span key={name} className="upload-badge">✅ {name}</span>
-            ))}
           </div>
         </div>
+        {uploadedDocs.length > 0 && (
+          <div className="doc-badges">
+            {uploadedDocs.map(doc => (
+              <span key={doc.id} className="upload-badge">
+                ✅ {doc.name}
+                <button className="badge-remove" onClick={() => removeDoc(doc.id)} title="Remove">×</button>
+              </span>
+            ))}
+          </div>
+        )}
       </header>
 
       <main className="chat-area">
