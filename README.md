@@ -1,21 +1,22 @@
 # RAG Agent Platform
 
-An end-to-end **AI-powered document Q&A system** built with FastAPI, pgvector, Voyage AI embeddings, and Claude API. Upload any PDF and ask questions — the system retrieves semantically relevant content and generates grounded, accurate answers in real time.
+An end-to-end **AI-powered document Q&A system** with multi-agent orchestration, semantic reranking, and an automated eval harness. Upload any PDF, ask questions — the system retrieves the most relevant content and streams a grounded, accurate answer in real time.
 
-**🚀 Live Demo:** https://rag-frontend-topaz.vercel.app
+**Live Demo:** https://rag-frontend-topaz.vercel.app
 
 ---
 
 ## Features
 
-- **Real semantic search** — Voyage AI `voyage-3.5` embeddings with 1024-dimensional vectors stored in pgvector
-- **Retrieval-Augmented Generation** — Claude API generates answers grounded in retrieved document context
-- **Real-time streaming** — responses stream token by token via server-sent events
-- **Document ingestion pipeline** — PDF upload → text extraction → chunking with overlap → embedding → indexed storage
-- **Cosine similarity search** — IVFFlat index on pgvector for fast sub-200ms retrieval
-- **OAuth2/JWT authentication** — secure user sessions with RBAC access control
-- **Automated test suite** — 16 Pytest tests covering ingestion, retrieval, and API endpoints
-- **Full CI/CD** — GitHub Actions → Docker → Railway deployment
+- **Multi-agent retrieval** — RetrievalAgent expands queries into 3 variants, runs parallel vector searches, deduplicates, and reranks the combined pool with a Voyage AI cross-encoder
+- **Two-stage retrieval** — fast ANN vector search (pgvector IVFFlat) followed by Voyage AI `rerank-2` for precision
+- **Real-time streaming** — answers stream token-by-token via Server-Sent Events
+- **Source citations** — every response shows which document and page each claim came from, with a match confidence score
+- **Eval harness** — LLM-as-judge scoring for faithfulness, answer relevance, and context quality
+- **Session-based privacy** — each browser gets a private UUID; your documents are never visible to other users (no login required)
+- **Multi-PDF support** — upload multiple documents, query across all of them simultaneously
+- **Markdown rendering** — structured responses with headings, bullet lists, code blocks, and bold text
+- **Drag-and-drop upload** — drag PDFs anywhere onto the page
 
 ---
 
@@ -23,22 +24,30 @@ An end-to-end **AI-powered document Q&A system** built with FastAPI, pgvector, V
 
 ```
 User (Browser)
-      ↓
+      │
+      ▼
 React Frontend (Vercel)
-      ↓
+      │  X-Session-ID header (browser-local UUID)
+      ▼
 FastAPI Backend (Railway)
-      ↓
-┌─────────────────────────────────┐
-│  POST /upload                   │
-│  PDF → extract → chunk → embed  │
-│  → store in pgvector            │
-├─────────────────────────────────┤
-│  POST /query                    │
-│  question → embed → cosine      │
-│  similarity search → top 5      │
-│  chunks → Claude API → stream   │
-└─────────────────────────────────┘
-      ↓
+      │
+      ├── POST /upload
+      │     PDF → PyPDF2 extraction → 500-word chunks (50-word overlap)
+      │     → Voyage AI voyage-3.5 embedding → pgvector storage
+      │
+      └── POST /query  ──►  Multi-Agent Orchestrator
+                                │
+                                ├── RetrievalAgent
+                                │     ├── Claude Haiku: query expansion (3 variants)
+                                │     ├── pgvector: parallel ANN search (3 × top-10)
+                                │     ├── deduplicate by chunk text
+                                │     └── Voyage rerank-2: single combined rerank → top 5
+                                │
+                                └── SynthesisAgent
+                                      ├── Claude Sonnet 4.6: grounded streaming answer
+                                      └── SSE: token stream + [CITATIONS] event
+      │
+      ▼
 PostgreSQL + pgvector (Railway)
 ```
 
@@ -48,15 +57,16 @@ PostgreSQL + pgvector (Railway)
 
 | Layer | Technology |
 |---|---|
-| **Frontend** | React, TypeScript, real-time SSE streaming |
-| **Backend** | Python, FastAPI, async/await |
-| **AI Agent** | Claude API (Anthropic), LangChain |
-| **Embeddings** | Voyage AI `voyage-3.5` — 1024 dimensions |
+| **Frontend** | React 18, TypeScript, react-markdown, SSE streaming |
+| **Backend** | Python 3.11, FastAPI, asyncpg, async/await throughout |
+| **Multi-Agent** | Custom orchestrator — RetrievalAgent + SynthesisAgent |
+| **LLM** | Claude Sonnet 4.6 (synthesis) · Claude Haiku 4.5 (query expansion, eval judge) |
+| **Embeddings** | Voyage AI `voyage-3.5` — 1024 dimensions, document/query input types |
+| **Reranking** | Voyage AI `rerank-2` cross-encoder |
 | **Vector DB** | PostgreSQL + pgvector, IVFFlat cosine index |
-| **Auth** | OAuth2, JWT, RBAC |
-| **Cloud** | AWS EC2, Railway, Vercel |
-| **DevOps** | Docker, GitHub Actions CI/CD |
-| **Testing** | Pytest — 16 tests |
+| **Privacy** | Browser-local session UUID via `localStorage` — no accounts needed |
+| **Deployment** | Vercel (frontend) · Railway Nixpacks (backend + DB) |
+| **Testing** | Pytest — 16 tests covering ingestion, retrieval, and API |
 
 ---
 
@@ -65,25 +75,27 @@ PostgreSQL + pgvector (Railway)
 ```
 rag-agent-platform/
 ├── app/
-│   ├── main.py          ← FastAPI server — routes, CORS, endpoints
-│   ├── ingestion.py     ← PDF extraction, chunking, Voyage AI embedding, pgvector storage
-│   ├── retrieval.py     ← Query embedding, cosine similarity search, context retrieval
-│   ├── agent.py         ← Claude API integration, streaming response generation
-│   ├── auth.py          ← OAuth2/JWT authentication, RBAC
-│   └── models.py        ← PostgreSQL schema definitions
+│   ├── main.py          ← FastAPI app — routes, CORS, lifespan pool, session ID
+│   ├── ingestion.py     ← PDF extraction, chunking, Voyage AI embedding, pgvector insert
+│   ├── retrieval.py     ← vector_search(), rerank() — used by orchestrator
+│   ├── orchestrator.py  ← RetrievalAgent (query expansion + parallel retrieval + rerank)
+│   │                       SynthesisAgent (streaming answer + citations)
+│   │                       run_pipeline() — entry point for /query
+│   ├── eval.py          ← LLM-as-judge: faithfulness, answer_relevance, context_quality
+│   ├── agent.py         ← Claude API streaming (used by SynthesisAgent)
+│   └── auth.py          ← JWT utilities (available but not required on endpoints)
 ├── frontend/
-│   ├── src/
-│   │   └── App.tsx      ← React frontend with real-time streaming UI
-│   └── public/
-│       └── index.html
+│   └── src/
+│       ├── App.tsx      ← Chat UI, eval panel, drag-and-drop, session management
+│       └── App.css      ← Dark theme, markdown styles, score bars, mobile layout
 ├── tests/
-│   ├── test_api.py          ← 5 API endpoint tests
-│   ├── test_ingestion.py    ← 6 chunking and pipeline tests
-│   └── test_retrieval.py    ← 5 embedding and retrieval tests
-├── schema.sql           ← PostgreSQL schema with pgvector setup
-├── pytest.ini           ← Pytest configuration
-├── requirements.txt     ← Python dependencies
-├── Dockerfile           ← Container configuration
+│   ├── test_api.py          ← API endpoint tests (health, upload, query, documents)
+│   ├── test_ingestion.py    ← Chunking pipeline tests
+│   └── test_retrieval.py    ← Retrieval tests with mocked asyncpg + embeddings
+├── schema.sql           ← pgvector extension, document_chunks table, IVFFlat index
+├── railway.json         ← Nixpacks builder config + start command
+├── vercel.json          ← Frontend build config (cd frontend && npm run build)
+├── requirements.txt
 └── .gitignore
 ```
 
@@ -99,37 +111,54 @@ PDF uploaded
 PyPDF2 extracts text page by page
       ↓
 Text split into 500-word chunks with 50-word overlap
-(overlap ensures sentences at boundaries don't lose meaning)
+(overlap ensures sentences at chunk boundaries retain context)
       ↓
-Each chunk sent to Voyage AI voyage-3.5
+Each chunk sent to Voyage AI voyage-3.5 (input_type="document")
 → returns 1024-dimensional semantic vector
       ↓
-chunk_text + embedding stored in PostgreSQL via pgvector
+chunk_text + embedding + session_id stored in PostgreSQL via pgvector
 ```
 
-### Query and Retrieval
+### Multi-Agent Query Pipeline
 
 ```
-User asks a question
+User question
       ↓
-Question embedded with same voyage-3.5 model
-(input_type="query" — Voyage optimizes differently for queries)
+RetrievalAgent
+  ├── Claude Haiku generates 2 alternative phrasings of the question
+  ├── All 3 queries embedded with voyage-3.5 (input_type="query")
+  ├── 3 parallel pgvector ANN searches (top 10 each = up to 30 candidates)
+  ├── Deduplicate by chunk text, keep highest cosine similarity
+  └── Voyage rerank-2 cross-encoder reranks combined pool → top 5
       ↓
-pgvector runs cosine similarity search:
-SELECT ... ORDER BY embedding <=> query_vector LIMIT 5
+SynthesisAgent
+  ├── Claude Sonnet 4.6 streams grounded markdown answer via SSE
+  └── Emits [CITATIONS] event with filename, page, and match score per source
       ↓
-Top 5 most semantically similar chunks returned
-      ↓
-Chunks passed to Claude API as context
-      ↓
-Claude generates grounded answer
-      ↓
-Response streamed token by token via SSE
+Frontend renders streaming tokens + source citation chips
 ```
 
-### Why Cosine Similarity?
+### Eval Harness
 
-Cosine similarity measures the angle between two vectors. Vectors that point in the same direction (similarity = 1) represent semantically similar text — even if they use different words. This enables true semantic search rather than keyword matching.
+```
+POST /eval  { question, document_ids }
+      ↓
+RetrievalAgent retrieves context (same pipeline as /query)
+      ↓
+Claude Sonnet generates non-streaming answer
+      ↓
+In parallel:
+  ├── Claude Haiku judges faithfulness (0–1): does every claim exist in the context?
+  └── Claude Haiku judges answer_relevance (0–1): does the answer address the question?
+      ↓
+context_quality = avg reranker similarity (no extra API call)
+      ↓
+Returns { faithfulness, answer_relevance, context_quality, overall }
+```
+
+### Why Cosine Similarity + Reranking?
+
+Vector search (bi-encoder) embeds the query and each chunk **independently** and measures geometric closeness — fast, but imprecise. The reranker (cross-encoder) sees the query and each chunk **together**, allowing it to judge actual relevance — slower but much more accurate. The two-stage approach uses the fast ANN index for candidate retrieval and the accurate reranker for final selection.
 
 ---
 
@@ -153,7 +182,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create a `.env` file (never commit this):
+Create a `.env` file:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -168,45 +197,27 @@ Set up the database:
 psql $DATABASE_URL < schema.sql
 ```
 
-Run the server:
+Run the backend:
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:8000/docs` for the API documentation.
+Run the frontend:
+
+```bash
+cd frontend
+npm install
+npm start
+```
 
 ---
 
 ## Running Tests
 
 ```bash
-cd rag-agent-platform
 source venv/bin/activate
 pytest tests/ -v
-```
-
-Expected output:
-
-```
-tests/test_api.py::test_health_returns_200 PASSED
-tests/test_api.py::test_health_returns_status_field PASSED
-tests/test_api.py::test_upload_no_file_returns_422 PASSED
-tests/test_api.py::test_query_no_body_returns_422 PASSED
-tests/test_api.py::test_documents_endpoint_returns_200 PASSED
-tests/test_ingestion.py::test_chunk_text_basic PASSED
-tests/test_ingestion.py::test_chunk_text_short_input PASSED
-tests/test_ingestion.py::test_chunk_text_empty_input PASSED
-tests/test_ingestion.py::test_chunk_text_no_empty_chunks PASSED
-tests/test_ingestion.py::test_chunk_text_preserves_content PASSED
-tests/test_ingestion.py::test_chunk_text_overlap PASSED
-tests/test_retrieval.py::test_retrieval_result_has_required_keys PASSED
-tests/test_retrieval.py::test_similarity_score_in_valid_range PASSED
-tests/test_retrieval.py::test_embedding_dimensions PASSED
-tests/test_retrieval.py::test_embedding_values_are_floats PASSED
-tests/test_retrieval.py::test_chunk_text_key_name PASSED
-
-16 passed in 1.79s
 ```
 
 ---
@@ -216,47 +227,31 @@ tests/test_retrieval.py::test_chunk_text_key_name PASSED
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
-| `POST` | `/upload` | Upload a PDF for ingestion |
-| `POST` | `/query` | Ask a question about uploaded documents |
-| `GET` | `/documents` | List all uploaded documents |
+| `POST` | `/upload` | Upload a PDF — session-scoped ingestion |
+| `POST` | `/query` | Stream an answer via SSE (multi-agent pipeline) |
+| `POST` | `/eval` | Run quality evaluation — returns faithfulness, relevance, context scores |
+| `GET` | `/documents` | List documents for the current session |
 
----
-
-## Deployment
-
-### Backend — Railway
-
-```bash
-railway login
-railway up
-```
-
-Set environment variables in Railway dashboard:
-- `ANTHROPIC_API_KEY`
-- `VOYAGE_API_KEY`
-- `DATABASE_URL` (use Railway's `${{Postgres.DATABASE_URL}}` reference)
-- `SECRET_KEY`
-
-### Frontend — Vercel
-
-```bash
-cd frontend
-CI=false npm run build
-vercel --prod
-```
+All endpoints read the `X-Session-ID` header to scope data per browser session.
 
 ---
 
 ## Key Engineering Decisions
 
-**Why Voyage AI over OpenAI embeddings?**
-Anthropic recommends Voyage AI as the embedding partner for Claude-based RAG systems. `voyage-3.5` is optimized for retrieval tasks and uses different `input_type` parameters for documents vs queries — improving retrieval quality.
+**Why two-stage retrieval (vector search + reranker)?**
+ANN vector search is O(log n) and very fast but uses bi-encoders that can miss nuanced relevance. The Voyage AI `rerank-2` cross-encoder sees query and chunk together and scores relevance much more accurately. Fetching 3× more candidates then reranking gives the recall of a wide search with the precision of a careful one.
+
+**Why query expansion?**
+A single embedding of the user's question might miss relevant chunks phrased differently. Generating 2 alternative phrasings with Claude Haiku and searching all 3 in parallel dramatically increases recall with minimal latency cost (the searches run concurrently).
+
+**Why LLM-as-judge for evaluation?**
+Reference-free evaluation — no ground-truth answers needed. Claude Haiku reads the question, answer, and retrieved context and scores faithfulness and relevance independently. This mirrors the RAGAS framework approach and is cheap enough (Haiku) to run on every eval request.
 
 **Why 500-word chunks with 50-word overlap?**
-Large chunks lose precision — the retrieved chunk contains too much irrelevant content alongside the answer. Small chunks lose context — sentences get split mid-thought. 500 words with 50-word overlap balances precision and context preservation.
+Large chunks lose precision — too much irrelevant content surrounds the answer. Small chunks lose context — sentences get split mid-thought. 500 words with 50-word overlap balances precision and context preservation at the boundary.
 
-**Why IVFFlat index?**
-Without an index, pgvector scans every row for every query — O(n) at scale. IVFFlat partitions vectors into clusters and searches only relevant clusters — making retrieval fast even with thousands of stored chunks.
+**Why session UUIDs instead of accounts?**
+For a public demo tool, login friction kills adoption. A UUID stored in `localStorage` gives each visitor a private, isolated document space without any signup. The UUID is validated on every request — no account = no attack surface.
 
 ---
 
