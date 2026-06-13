@@ -409,6 +409,193 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── EVAL BUTTON ────────────────────────────── */
+.eval-btn {
+  padding: 7px 14px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  color: rgba(240,238,232,0.7);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.eval-btn:hover { background: rgba(202,255,51,0.1); border-color: rgba(202,255,51,0.3); color: #CAFF33; }
+
+/* ── EVAL PANEL ─────────────────────────────── */
+.eval-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.eval-panel {
+  background: #111113;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 640px;
+  max-height: 88vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.eval-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.eval-title { font-size: 16px; font-weight: 700; color: #F0EEE8; }
+.eval-sub { font-size: 12px; color: rgba(240,238,232,0.4); margin-top: 3px; }
+
+.eval-close {
+  background: none; border: none; color: rgba(240,238,232,0.4);
+  font-size: 22px; cursor: pointer; line-height: 1; padding: 0;
+}
+.eval-close:hover { color: #F0EEE8; }
+
+.eval-input-row {
+  display: flex;
+  gap: 10px;
+  padding: 16px 24px;
+}
+
+.eval-input {
+  flex: 1;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: #F0EEE8;
+  font-size: 14px;
+  outline: none;
+  font-family: inherit;
+}
+.eval-input:focus { border-color: #CAFF33; }
+.eval-input::placeholder { color: rgba(240,238,232,0.3); }
+
+.eval-run-btn {
+  padding: 10px 20px;
+  background: #CAFF33;
+  color: #0A0A0B;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 90px;
+}
+.eval-run-btn:hover { opacity: 0.88; }
+.eval-run-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.eval-error {
+  margin: 0 24px 16px;
+  padding: 10px 14px;
+  background: rgba(255,107,107,0.1);
+  border: 1px solid rgba(255,107,107,0.2);
+  border-radius: 8px;
+  color: #FF6B6B;
+  font-size: 13px;
+}
+
+.eval-results {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0 24px 24px;
+}
+
+.eval-scores {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.score-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.score-label {
+  font-size: 12px;
+  color: rgba(240,238,232,0.6);
+  width: 140px;
+  flex-shrink: 0;
+}
+
+.score-bar-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(255,255,255,0.07);
+  border-radius: 100px;
+  overflow: hidden;
+}
+
+.score-bar-fill {
+  height: 100%;
+  border-radius: 100px;
+  transition: width 0.5s ease;
+}
+
+.score-value {
+  font-size: 12px;
+  font-weight: 700;
+  width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.eval-divider { height: 1px; background: rgba(255,255,255,0.07); margin: 2px 0; }
+
+.eval-answer-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(240,238,232,0.35);
+}
+
+.eval-answer {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px;
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #F0EEE8;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.eval-answer p { margin-bottom: 0.5em; }
+.eval-answer p:last-child { margin-bottom: 0; }
+.eval-answer strong { color: #fff; }
+.eval-answer ul, .eval-answer ol { padding-left: 1.3em; }
+.eval-answer li { margin-bottom: 0.2em; }
+
+.eval-sources { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
 /* ── MOBILE ─────────────────────────────────── */
 @media (max-width: 640px) {
   .header { padding: 0 1rem; }

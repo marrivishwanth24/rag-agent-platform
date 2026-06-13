@@ -11,9 +11,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
+import anthropic as _anthropic_sdk
+
 from app.ingestion import ingest_document
-from app.retrieval import retrieve_context, list_documents
-from app.agent import stream_agent_response
+from app.retrieval import list_documents
+from app.orchestrator import RetrievalAgent, run_pipeline
+from app.eval import evaluate
 from app.auth import create_access_token, hash_password, verify_password
 
 _UUID_RE = re.compile(
@@ -125,16 +128,59 @@ async def upload_document(
 @app.post("/query")
 async def query_agent(body: QueryRequest, request: Request):
     pool = get_pool(request)
-    context_chunks = await retrieve_context(
-        query=body.question,
-        document_ids=body.document_ids,
-        user_id=get_session_id(request),
-        pool=pool,
-    )
     return StreamingResponse(
-        stream_agent_response(body.question, context_chunks),
+        run_pipeline(
+            question=body.question,
+            document_ids=body.document_ids,
+            user_id=get_session_id(request),
+            pool=pool,
+        ),
         media_type="text/event-stream",
     )
+
+
+class EvalRequest(BaseModel):
+    question: str
+    document_ids: list[str] = []
+
+
+@app.post("/eval")
+async def eval_rag(body: EvalRequest, request: Request):
+    """
+    Run the full multi-agent pipeline and return a quality scorecard.
+    Scores: faithfulness, answer_relevance, context_quality (each 0–1).
+    """
+    pool = get_pool(request)
+    session_id = get_session_id(request)
+
+    # Use the same RetrievalAgent as /query for consistency
+    chunks = await RetrievalAgent().retrieve(
+        body.question, body.document_ids, session_id, pool
+    )
+
+    # Generate a non-streaming answer for the judge to evaluate
+    _client = _anthropic_sdk.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    formatted = "\n\n".join(
+        f"[Source: {c['filename']}, Page {c.get('page_num', '?')}]\n{c['chunk_text']}"
+        for c in chunks
+    )
+    resp = await _client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": f"Context:\n{formatted}\n\n---\n\nQuestion: {body.question}"}],
+    )
+    answer = resp.content[0].text
+
+    scores = await evaluate(body.question, answer, chunks)
+    return {
+        "question": body.question,
+        "answer": answer,
+        "scores": scores,
+        "sources": [
+            {"filename": c["filename"], "page_num": c["page_num"], "similarity": round(c["similarity"], 2)}
+            for c in chunks
+        ],
+    }
 
 
 @app.get("/documents")

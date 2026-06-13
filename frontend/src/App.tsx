@@ -2,6 +2,132 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import "./App.css";
 
+// ── Eval Panel ────────────────────────────────────────────────────────────────
+
+interface EvalScores {
+  faithfulness: number;
+  answer_relevance: number;
+  context_quality: number;
+  overall: number;
+}
+
+interface EvalResult {
+  question: string;
+  answer: string;
+  scores: EvalScores;
+  sources: { filename: string; page_num: number; similarity: number }[];
+}
+
+function ScoreBar({ label, value }: { label: string; value: number }) {
+  const pct = Math.round(value * 100);
+  const color = pct >= 75 ? "#CAFF33" : pct >= 50 ? "#FFD700" : "#FF6B6B";
+  return (
+    <div className="score-row">
+      <span className="score-label">{label}</span>
+      <div className="score-bar-track">
+        <div className="score-bar-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="score-value" style={{ color }}>{pct}%</span>
+    </div>
+  );
+}
+
+function EvalPanel({
+  documentIds,
+  onClose,
+}: {
+  documentIds: string[];
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<EvalResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    if (!q.trim()) return;
+    setLoading(true);
+    setResult(null);
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/eval`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Session-ID": SESSION_ID },
+        body: JSON.stringify({ question: q, document_ids: documentIds }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        setError(d.detail ?? "Eval failed");
+      } else {
+        setResult(await res.json());
+      }
+    } catch {
+      setError("Could not reach server.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="eval-overlay" onClick={onClose}>
+      <div className="eval-panel" onClick={e => e.stopPropagation()}>
+        <div className="eval-header">
+          <div>
+            <div className="eval-title">Eval Harness</div>
+            <div className="eval-sub">LLM-as-judge · measures faithfulness, relevance & context quality</div>
+          </div>
+          <button className="eval-close" onClick={onClose}>×</button>
+        </div>
+
+        <div className="eval-input-row">
+          <input
+            className="eval-input"
+            placeholder="Enter a question to evaluate…"
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && !loading && run()}
+          />
+          <button className="eval-run-btn" onClick={run} disabled={loading || !q.trim()}>
+            {loading ? <span className="send-spinner" /> : "Run Eval"}
+          </button>
+        </div>
+
+        {error && <div className="eval-error">{error}</div>}
+
+        {result && (
+          <div className="eval-results">
+            <div className="eval-scores">
+              <ScoreBar label="Faithfulness" value={result.scores.faithfulness} />
+              <ScoreBar label="Answer Relevance" value={result.scores.answer_relevance} />
+              <ScoreBar label="Context Quality" value={result.scores.context_quality} />
+              <div className="eval-divider" />
+              <ScoreBar label="Overall" value={result.scores.overall} />
+            </div>
+
+            <div className="eval-answer-label">Answer</div>
+            <div className="eval-answer">
+              <ReactMarkdown>{result.answer}</ReactMarkdown>
+            </div>
+
+            {result.sources.length > 0 && (
+              <div className="eval-sources">
+                <div className="eval-answer-label">Sources used</div>
+                {result.sources.map((s, i) => (
+                  <span key={i} className="citation-chip">
+                    <span className="citation-icon">📄</span>
+                    <span className="citation-name">{s.filename.replace(/\.pdf$/i, "")}</span>
+                    <span className="citation-page">p.{s.page_num}</span>
+                    <span className="citation-score">{Math.round(s.similarity * 100)}%</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const API_URL = "https://rag-agent-platform-production.up.railway.app";
 
 function getSessionId(): string {
@@ -44,6 +170,7 @@ function App() {
   const [uploadedDocs, setUploadedDocs] = useState<{ name: string; id: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [evalOpen, setEvalOpen] = useState(false);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -168,6 +295,9 @@ function App() {
 
   return (
     <div className="app">
+      {evalOpen && (
+        <EvalPanel documentIds={documentIds} onClose={() => setEvalOpen(false)} />
+      )}
       <header className="header">
         <div className="header-inner">
           <div className="logo">
@@ -194,6 +324,9 @@ function App() {
                 ✦ New Chat
               </button>
             )}
+            <button className="eval-btn" onClick={() => setEvalOpen(true)} title="Open eval harness">
+              ⚡ Eval
+            </button>
             <button className="upload-btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
               {uploading ? "⏳ Processing..." : "📄 Upload PDF"}
             </button>

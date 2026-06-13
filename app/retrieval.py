@@ -14,7 +14,7 @@ async def get_embedding(text: str) -> list[float]:
     return result.embeddings[0]
 
 
-async def _vector_search(
+async def vector_search(
     query: str,
     document_ids: list[str],
     user_id: str,
@@ -64,7 +64,7 @@ async def _vector_search(
     ]
 
 
-async def _rerank(query: str, chunks: list[dict], top_k: int) -> list[dict]:
+async def rerank(query: str, chunks: list[dict], top_k: int) -> list[dict]:
     """Rerank candidates with Voyage AI cross-encoder, normalize scores to [0,1]."""
     client = voyageai.AsyncClient(api_key=os.getenv("VOYAGE_API_KEY"))
     result = await client.rerank(
@@ -98,10 +98,10 @@ async def retrieve_context(
     1. Fetch top_k * 3 candidates from pgvector (fast ANN)
     2. Rerank with Voyage AI cross-encoder (accurate), return top_k
     """
-    candidates = await _vector_search(query, document_ids, user_id, pool, limit=top_k * 3)
+    candidates = await vector_search(query, document_ids, user_id, pool, limit=top_k * 3)
     if not candidates:
         return []
-    return await _rerank(query, candidates, top_k=top_k)
+    return await rerank(query, candidates, top_k=top_k)
 
 
 async def list_documents(user_id: str, pool: asyncpg.Pool) -> list[dict]:
