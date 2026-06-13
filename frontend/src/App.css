@@ -37,7 +37,7 @@ body {
 .logo-title { font-size: 16px; font-weight: 700; color: #F0EEE8; }
 .logo-sub { font-size: 11px; color: rgba(240,238,232,0.4); margin-top: 1px; }
 
-.upload-area { display: flex; align-items: center; gap: 12px; }
+.upload-area { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
 
 .upload-btn {
   padding: 8px 18px;

@@ -24,34 +24,36 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [uploadedFile, setUploadedFile] = useState<string | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
   const [documentIds, setDocumentIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const uploadPDF = async (file: File) => {
+  const uploadPDFs = async (files: File[]) => {
     setUploading(true);
-    const formData = new FormData();
-    formData.append("file", file);
-    try {
-      const res = await fetch(`${API_URL}/upload`, {
-        method: "POST",
-        headers: { "X-Session-ID": SESSION_ID },
-        body: formData,
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setMessages(prev => [...prev, { role: "assistant", content: `Upload failed: ${data.detail}` }]);
-        return;
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append("file", file);
+      try {
+        const res = await fetch(`${API_URL}/upload`, {
+          method: "POST",
+          headers: { "X-Session-ID": SESSION_ID },
+          body: formData,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setMessages(prev => [...prev, { role: "assistant", content: `Upload failed for **${file.name}**: ${data.detail}` }]);
+          continue;
+        }
+        setUploadedFiles(prev => [...prev, file.name]);
+        setDocumentIds(prev => [...prev, data.document_id]);
+        setMessages(prev => [...prev, {
+          role: "assistant",
+          content: `**${file.name}** uploaded and indexed.`,
+        }]);
+      } catch {
+        setMessages(prev => [...prev, { role: "assistant", content: `Upload failed for **${file.name}**. Please check the server is running.` }]);
       }
-      setUploadedFile(file.name);
-      setDocumentIds(prev => [...prev, data.document_id]);
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        content: `**${file.name}** uploaded and indexed. You can now ask questions about it.`,
-      }]);
-    } catch {
-      setMessages(prev => [...prev, { role: "assistant", content: "Upload failed. Please check the server is running." }]);
     }
     setUploading(false);
   };
@@ -121,9 +123,14 @@ function App() {
             <input
               type="file"
               accept=".pdf"
+              multiple
               ref={fileRef}
               style={{ display: "none" }}
-              onChange={e => e.target.files?.[0] && uploadPDF(e.target.files[0])}
+              onChange={e => {
+                const files = Array.from(e.target.files ?? []);
+                if (files.length > 0) uploadPDFs(files);
+                e.target.value = "";
+              }}
             />
             <button
               className="upload-btn"
@@ -132,7 +139,9 @@ function App() {
             >
               {uploading ? "⏳ Processing..." : "📄 Upload PDF"}
             </button>
-            {uploadedFile && <span className="upload-badge">✅ {uploadedFile}</span>}
+            {uploadedFiles.map(name => (
+              <span key={name} className="upload-badge">✅ {name}</span>
+            ))}
           </div>
         </div>
       </header>
