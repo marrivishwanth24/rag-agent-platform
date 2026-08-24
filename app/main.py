@@ -35,12 +35,24 @@ def get_session_id(request: Request) -> str:
 async def lifespan(app: FastAPI):
     db_url = os.getenv("DATABASE_URL")
     app.state.pool = None
+    
     if db_url:
-        try:
-            app.state.pool = await asyncpg.create_pool(db_url)
-        except Exception as e:
-            print(f"WARNING: Could not connect to database: {e}")
+        # Wait for database to be ready
+        for attempt in range(10):
+            try:
+                app.state.pool = await asyncpg.create_pool(db_url)
+                print("Database connected successfully!")
+                break
+            except Exception as e:
+                print(f"WARNING: Could not connect to database: {e}")
+                if attempt < 9:
+                    print(f"Retrying in 3 seconds... (attempt {attempt + 1}/10)")
+                    await asyncio.sleep(3)
+                else:
+                    print("Database failed to connect after 10 attempts")
+    
     yield
+    
     if app.state.pool:
         await app.state.pool.close()
 
