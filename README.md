@@ -8,7 +8,7 @@ An end-to-end **AI-powered document Q&A system** with LangChain-orchestrated mul
 
 ## Features
 
-- **Multi-agent retrieval** — RetrievalAgent is a LangChain (LCEL) chain that expands queries into 3 variants, runs parallel vector searches via `Runnable.abatch`, deduplicates, and reranks the combined pool with a Voyage AI cross-encoder
+- **Multi-agent retrieval** — RetrievalAgent is a LangGraph state machine that expands queries into 3 variants, runs parallel vector searches via `Runnable.abatch`, deduplicates, reranks with a Voyage AI cross-encoder, and self-corrects — grading context sufficiency and widening the search on a retry if the first pass looks weak
 - **Two-stage retrieval** — fast ANN vector search (pgvector IVFFlat) followed by Voyage AI `rerank-2` for precision
 - **Real-time streaming** — answers stream token-by-token via Server-Sent Events
 - **Source citations** — every response shows which document and page each claim came from, with a match confidence score
@@ -35,13 +35,16 @@ FastAPI Backend (Railway)
       │     PDF → PyPDF2 extraction → 500-word chunks (50-word overlap)
       │     → Voyage AI voyage-3.5 embedding → pgvector storage
       │
-      └── POST /query  ──►  Multi-Agent Orchestrator (LangChain LCEL)
+      └── POST /query  ──►  Multi-Agent Orchestrator (LangGraph + LangChain)
                                 │
-                                ├── RetrievalAgent — an LCEL chain
-                                │     ├── Claude Haiku (ChatAnthropic): query expansion (3 variants)
+                                ├── RetrievalAgent — a LangGraph state machine
+                                │     ├── Claude Haiku (structured output): query expansion (3 variants)
                                 │     ├── pgvector: parallel ANN search (Runnable.abatch, 3 × top-10)
                                 │     ├── deduplicate by chunk text
-                                │     └── Voyage rerank-2: single combined rerank → top 5
+                                │     ├── Voyage rerank-2: single combined rerank → top 5
+                                │     └── Claude Haiku (structured output): grade context sufficiency
+                                │           → insufficient? widen search + retry (bounded, max 1 retry)
+                                │           → sufficient (or retries exhausted)? proceed
                                 │
                                 └── SynthesisAgent
                                       ├── Claude Sonnet 4.6 (ChatAnthropic): grounded streaming answer
@@ -59,14 +62,15 @@ PostgreSQL + pgvector (Railway)
 |---|---|
 | **Frontend** | React 18, TypeScript, react-markdown, SSE streaming |
 | **Backend** | Python 3.11, FastAPI, asyncpg, async/await throughout |
-| **Multi-Agent** | LangChain (LCEL) — RetrievalAgent chain + SynthesisAgent, via `langchain-anthropic` |
-| **LLM** | Claude Sonnet 4.6 (synthesis) · Claude Haiku 4.5 (query expansion, eval judge) |
+| **Multi-Agent** | LangGraph — RetrievalAgent state machine (self-correcting retrieval loop) + SynthesisAgent, via `langchain-anthropic` |
+| **LLM** | Claude Sonnet 4.6 (synthesis) · Claude Haiku 4.5 (query expansion, sufficiency grading, eval judge) |
+| **Structured Output** | `with_structured_output` (Pydantic) for query expansion and context-sufficiency grading |
 | **Embeddings** | Voyage AI `voyage-3.5` — 1024 dimensions, document/query input types |
 | **Reranking** | Voyage AI `rerank-2` cross-encoder |
 | **Vector DB** | PostgreSQL + pgvector, IVFFlat cosine index |
 | **Privacy** | Browser-local session UUID via `localStorage` — no accounts needed |
 | **Deployment** | Vercel (frontend) · Railway Nixpacks (backend + DB) |
-| **Testing** | Pytest — 28 tests covering ingestion, retrieval, orchestration, and API |
+| **Testing** | Pytest — 30 tests covering ingestion, retrieval, orchestration (incl. the retry/escalation branch), and API |
 
 ---
 
@@ -78,8 +82,9 @@ rag-agent-platform/
 │   ├── main.py          ← FastAPI app — routes, CORS, lifespan pool, session ID
 │   ├── ingestion.py     ← PDF extraction, chunking, Voyage AI embedding, pgvector insert
 │   ├── retrieval.py     ← vector_search(), rerank() — used by orchestrator
-│   ├── orchestrator.py  ← RetrievalAgent — LangChain LCEL chain (query expansion
-│   │                       + parallel retrieval via Runnable.abatch + rerank)
+│   ├── orchestrator.py  ← RetrievalAgent — LangGraph state machine (query expansion
+│   │                       + parallel retrieval via Runnable.abatch + rerank +
+│   │                       self-correcting sufficiency-grading retry loop)
 │   │                       SynthesisAgent (ChatAnthropic streaming + citations)
 │   │                       run_pipeline() — entry point for /query
 │   ├── eval.py          ← LLM-as-judge: faithfulness, answer_relevance, context_quality
@@ -124,17 +129,21 @@ chunk_text + embedding + session_id stored in PostgreSQL via pgvector
 
 ### Multi-Agent Query Pipeline
 
-RetrievalAgent is implemented as a LangChain **LCEL** chain — each step is a `RunnableLambda`, composed with `|` into a single `RunnableSequence` and invoked via `.ainvoke()`:
+RetrievalAgent is a **LangGraph** state machine — each step is a node, wired with `add_edge`/`add_conditional_edges`, invoked via `.ainvoke()`. The parallel search fan-out within the `parallel_search` node is a LangChain `Runnable` run via `.abatch()`. Both LLM decision steps (query expansion, sufficiency grading) use `with_structured_output` against a Pydantic schema instead of hand-parsed JSON:
 
 ```
 User question
       ↓
-RetrievalAgent  (LangChain LCEL chain)
-  ├── expand_queries   — ChatAnthropic (Haiku) generates 2 alternative phrasings
-  ├── parallel_search  — Runnable.abatch() fans the 3 queries out concurrently
-  │                       to pgvector (top 10 each = up to 30 candidates)
-  ├── dedupe           — by chunk text, keep highest cosine similarity
-  └── rerank           — Voyage rerank-2 cross-encoder on the combined pool → top 5
+RetrievalAgent  (LangGraph state machine)
+  ├── expand_queries     — Haiku (structured output) generates 2 alternative phrasings
+  ├── parallel_search    — Runnable.abatch() fans the queries out concurrently to
+  │                         pgvector; widens top_k automatically on a retry
+  ├── dedupe              — by chunk text, keep highest cosine similarity
+  ├── rerank              — Voyage rerank-2 cross-encoder on the combined pool → top 5
+  └── grade_sufficiency   — Haiku (structured output) judges: does this context
+        │                   likely answer the question?
+        ├── insufficient & attempts < 2 → loop back to parallel_search, widened
+        └── sufficient, or attempts exhausted → proceed with best-effort context
       ↓
 SynthesisAgent
   ├── ChatAnthropic (Claude Sonnet 4.6) streams a grounded markdown answer via SSE
@@ -142,6 +151,8 @@ SynthesisAgent
       ↓
 Frontend renders streaming tokens + source citation chips
 ```
+
+This self-correction branch is deliberately small — one bounded retry, not an open-ended agent loop — but it's the same escalate-and-retry shape as a decision engine that widens its search before giving up, rather than a fixed linear pipeline.
 
 ### Eval Harness
 
@@ -249,8 +260,8 @@ ANN vector search is O(log n) and very fast but uses bi-encoders that can miss n
 **Why query expansion?**
 A single embedding of the user's question might miss relevant chunks phrased differently. Generating 2 alternative phrasings with Claude Haiku and searching all 3 in parallel dramatically increases recall with minimal latency cost (the searches run concurrently).
 
-**Why LangChain (LCEL) for orchestration, and not LangGraph or raw SDK calls?**
-The retrieval pipeline is a linear sequence with one fan-out step (parallel search across query variants) — exactly what LCEL's `Runnable` composition (`|`, `.abatch()`) is for. Each step (`expand_queries`, `parallel_search`, `rerank`) is an independent, testable `RunnableLambda`; `tests/test_orchestrator.py` mocks the LLM and retrieval boundaries to verify the chain's wiring and exact SSE output without hitting real APIs. LangGraph's explicit state-graph model would add more structure than a single linear chain needs; the vector store itself stays a direct `asyncpg` + pgvector query (not `langchain_postgres.PGVector`) since the hand-tuned SQL and session/document filtering were already working well — LangChain's value here is in the orchestration layer, not replacing a working data layer.
+**Why LangGraph for the retrieval agent, and not a linear LCEL chain or raw SDK calls?**
+The retrieval pipeline isn't purely linear — once a sufficiency-grading step exists, there's a real branch: retry with a widened search, or proceed. That's exactly what LangGraph's explicit state graph (nodes + conditional edges) models, and a plain LCEL `|` chain can't express a loop. The pipeline started as an LCEL chain (still true for the `parallel_search` node's fan-out, which uses `Runnable.abatch()`); LangGraph was introduced specifically when a real decision point — "is this context good enough?" — was added. Each node is an independent, testable async function; `tests/test_orchestrator.py` mocks the LLM and retrieval boundaries to verify the graph's wiring, the retry/escalation branch, its bounded termination, and the exact SSE output, without hitting real APIs. The vector store itself stays a direct `asyncpg` + pgvector query (not `langchain_postgres.PGVector`) since the hand-tuned SQL and session/document filtering were already working well — LangChain/LangGraph's value here is in the orchestration and decision layer, not replacing a working data layer.
 
 **Why LLM-as-judge for evaluation?**
 Reference-free evaluation — no ground-truth answers needed. Claude Haiku reads the question, answer, and retrieved context and scores faithfulness and relevance independently. This mirrors the RAGAS framework approach and is cheap enough (Haiku) to run on every eval request.
