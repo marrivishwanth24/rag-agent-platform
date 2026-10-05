@@ -126,10 +126,13 @@ async def test_retrieval_agent_stops_retrying_after_max_attempts():
 
 @pytest.mark.asyncio
 async def test_synthesis_agent_streams_tokens_then_citations_then_done():
-    with patch("app.orchestrator._sonnet") as mock_sonnet:
+    with patch("app.orchestrator._sonnet") as mock_sonnet, \
+         patch("app.orchestrator._maybe_call_tools", new=AsyncMock(return_value=None)):
         mock_sonnet.astream = lambda messages: _fake_stream(["Hello", " world"])
 
-        events = [e async for e in SynthesisAgent().stream("q?", [CHUNK_A, CHUNK_B])]
+        events = [e async for e in SynthesisAgent().stream(
+            "q?", [CHUNK_A, CHUNK_B], "user-1", pool=object()
+        )]
 
     assert events[0] == "data: Hello\n\n"
     assert events[1] == "data:  world\n\n"
@@ -145,7 +148,8 @@ async def test_run_pipeline_wires_retrieval_into_synthesis():
          patch("app.orchestrator._grader") as mock_grader, \
          patch("app.orchestrator.vector_search", new=AsyncMock(return_value=[CHUNK_A])), \
          patch("app.orchestrator.rerank", new=AsyncMock(return_value=[CHUNK_A])), \
-         patch("app.orchestrator._sonnet") as mock_sonnet:
+         patch("app.orchestrator._sonnet") as mock_sonnet, \
+         patch("app.orchestrator._maybe_call_tools", new=AsyncMock(return_value=None)):
         mock_expander.ainvoke = AsyncMock(return_value=_expansion([]))
         mock_grader.ainvoke = AsyncMock(return_value=_grade(True))
         mock_sonnet.astream = lambda messages: _fake_stream(["answer"])
@@ -154,3 +158,61 @@ async def test_run_pipeline_wires_retrieval_into_synthesis():
 
     assert events[0] == "data: answer\n\n"
     assert events[-1] == "data: [DONE]\n\n"
+
+
+# ── Agentic tool calling ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_maybe_call_tools_returns_none_when_model_declines():
+    """Common case: the model answers directly, no tool call requested."""
+    from app.orchestrator import _maybe_call_tools
+
+    with patch("app.orchestrator._tool_router") as mock_router, \
+         patch("app.orchestrator.list_documents", new=AsyncMock()) as mock_list:
+        mock_router.ainvoke = AsyncMock(return_value=SimpleNamespace(tool_calls=[]))
+
+        result = await _maybe_call_tools("What does the contract say about liability?", "user-1", pool=object())
+
+    assert result is None
+    mock_list.assert_not_called()  # tool never executed if the model didn't request it
+
+
+@pytest.mark.asyncio
+async def test_maybe_call_tools_executes_tool_with_server_side_session_context():
+    """When the model requests the tool, the server executes it with the real
+    user_id/pool — not anything the model supplied (the schema takes no args)."""
+    from app.orchestrator import _maybe_call_tools
+
+    real_user_id, real_pool = "user-42", object()
+    with patch("app.orchestrator._tool_router") as mock_router, \
+         patch("app.orchestrator.list_documents", new=AsyncMock(
+             return_value=[{"filename": "handbook.pdf"}, {"filename": "policy.pdf"}]
+         )) as mock_list:
+        mock_router.ainvoke = AsyncMock(
+            return_value=SimpleNamespace(tool_calls=[{"name": "list_documents_tool", "args": {}}])
+        )
+
+        result = await _maybe_call_tools("What documents do I have?", real_user_id, real_pool)
+
+    mock_list.assert_called_once_with(real_user_id, real_pool)
+    assert "handbook.pdf" in result and "policy.pdf" in result
+
+
+@pytest.mark.asyncio
+async def test_synthesis_agent_folds_tool_result_into_context():
+    with patch("app.orchestrator._sonnet") as mock_sonnet, \
+         patch("app.orchestrator._maybe_call_tools", new=AsyncMock(
+             return_value="[Tool: list_documents] Available documents: a.pdf, b.pdf"
+         )):
+        captured = {}
+
+        def _capture_and_stream(messages):
+            captured["messages"] = messages
+            return _fake_stream(["ok"])
+
+        mock_sonnet.astream = _capture_and_stream
+
+        _ = [e async for e in SynthesisAgent().stream("what do I have?", [], "user-1", pool=object())]
+
+    user_message_text = captured["messages"][1].content
+    assert "Available documents: a.pdf, b.pdf" in user_message_text

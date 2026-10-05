@@ -25,8 +25,15 @@ The per-query-variant search fan-out is still a LangChain Runnable, run
 concurrently via `.abatch()` — LangGraph owns the *decision* structure,
 LCEL owns the *parallel execution* within a single node.
 
-SynthesisAgent streams a grounded markdown answer via ChatAnthropic, then
-emits [CITATIONS] and [DONE] SSE events.
+SynthesisAgent streams a grounded markdown answer via ChatAnthropic. Before
+synthesizing, a cheap Haiku call with a bound tool (list_documents_tool)
+decides — the model's choice, not a keyword/intent heuristic — whether the
+question needs a document listing rather than document content (e.g. "what
+files do I have?"). If it calls the tool, the server executes it with the
+real session's user_id/pool (the model never sees or controls those — it
+can only request the tool, not supply session parameters), and the result is
+folded into the synthesis context. SynthesisAgent then emits [CITATIONS] and
+[DONE] SSE events.
 
 run_pipeline() wires them together and is passed directly to FastAPI's
 StreamingResponse. Public API (RetrievalAgent.retrieve, run_pipeline) is
@@ -39,10 +46,11 @@ from typing import AsyncGenerator, TypedDict
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
-from app.retrieval import vector_search, rerank
+from app.retrieval import vector_search, rerank, list_documents
 
 _haiku = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=150)
 _sonnet = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=1024, streaming=True)
@@ -227,6 +235,47 @@ class RetrievalAgent:
         return result["chunks"]
 
 
+# ── Agentic tool calling ─────────────────────────────────────────────────────
+#
+# The tool's schema takes no session arguments — user_id/pool are server-side
+# context, not something the model supplies. The model can only request that
+# the tool be called; the server decides what it's called *with*. That means
+# a tool call can't be used to pivot across sessions, regardless of what the
+# model is prompted or tricked into asking for.
+
+@tool
+async def list_documents_tool() -> str:
+    """List the filenames of documents available to search. Call this when the
+    user asks what documents/files they have uploaded or which are available —
+    not when they're asking a question about document content."""
+    return ""  # schema-only stub; actually executed in _maybe_call_tools below
+
+
+_tool_router = _haiku.bind_tools([list_documents_tool])
+
+
+async def _maybe_call_tools(question: str, user_id: str, pool) -> str | None:
+    """Ask a cheap model whether this question needs list_documents_tool, and
+    execute it server-side (with the real session context) if so.
+
+    Returns a context string to fold into synthesis, or None if no tool call
+    was made (the common case — most questions are about document content).
+    """
+    try:
+        decision = await _tool_router.ainvoke([
+            HumanMessage(content=f"User message: {question}")
+        ])
+    except Exception:
+        return None
+
+    if not getattr(decision, "tool_calls", None):
+        return None
+
+    docs = await list_documents(user_id, pool)
+    names = ", ".join(d["filename"] for d in docs) if docs else "no documents uploaded yet"
+    return f"[Tool: list_documents] Available documents: {names}"
+
+
 # ── Synthesis Agent ──────────────────────────────────────────────────────────
 
 class SynthesisAgent:
@@ -244,11 +293,17 @@ class SynthesisAgent:
         self,
         question: str,
         chunks: list[dict],
+        user_id: str,
+        pool,
     ) -> AsyncGenerator[str, None]:
+        tool_note = await _maybe_call_tools(question, user_id, pool)
+
         formatted = "\n\n".join(
             f"[Source: {c['filename']}, Page {c.get('page_num', '?')}]\n{c['chunk_text']}"
             for c in chunks
         )
+        if tool_note:
+            formatted = f"{tool_note}\n\n{formatted}" if formatted else tool_note
         user_msg = f"Context:\n{formatted}\n\n---\n\nQuestion: {question}"
         messages = [SystemMessage(content=self._SYSTEM), HumanMessage(content=user_msg)]
 
@@ -286,5 +341,5 @@ async def run_pipeline(
       2. SynthesisAgent  — grounded streaming answer + citations via ChatAnthropic
     """
     chunks = await RetrievalAgent().retrieve(question, document_ids, user_id, pool)
-    async for event in SynthesisAgent().stream(question, chunks):
+    async for event in SynthesisAgent().stream(question, chunks, user_id, pool):
         yield event
