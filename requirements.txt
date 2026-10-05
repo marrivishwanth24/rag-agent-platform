@@ -3,6 +3,8 @@ fastapi
 anthropic
 langchain-core==1.6.6
 langchain-anthropic==1.7.5
+langchain-openai==1.6.7
+langgraph==1.2.13
 asyncpg
 pypdf
 passlib

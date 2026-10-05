@@ -1,0 +1,8 @@
+# Dependencies for app/mcp_server.py — kept separate from requirements.txt
+# on purpose: `mcp` pulls in a Starlette version that conflicts with
+# FastAPI 0.115.0's pin (see app/mcp_server.py docstring). Install this file
+# only in the MCP server's own environment/process, never alongside the main
+# web app's requirements.txt.
+
+mcp==2.3.0
+asyncpg

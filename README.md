@@ -8,7 +8,7 @@ An end-to-end **AI-powered document Q&A system** with LangChain-orchestrated mul
 
 ## Features
 
-- **Multi-agent retrieval** — RetrievalAgent is a LangChain (LCEL) chain that expands queries into 3 variants, runs parallel vector searches via `Runnable.abatch`, deduplicates, and reranks the combined pool with a Voyage AI cross-encoder
+- **Multi-agent retrieval** — RetrievalAgent is a LangGraph state machine that expands queries into 3 variants, runs parallel vector searches via `Runnable.abatch`, deduplicates, reranks with a Voyage AI cross-encoder, and self-corrects — grading context sufficiency and widening the search on a retry if the first pass looks weak
 - **Two-stage retrieval** — fast ANN vector search (pgvector IVFFlat) followed by Voyage AI `rerank-2` for precision
 - **Real-time streaming** — answers stream token-by-token via Server-Sent Events
 - **Source citations** — every response shows which document and page each claim came from, with a match confidence score
@@ -17,6 +17,10 @@ An end-to-end **AI-powered document Q&A system** with LangChain-orchestrated mul
 - **Multi-PDF support** — upload multiple documents, query across all of them simultaneously
 - **Markdown rendering** — structured responses with headings, bullet lists, code blocks, and bold text
 - **Drag-and-drop upload** — drag PDFs anywhere onto the page
+- **Agentic tool calling** — before answering, the model (not a keyword heuristic) decides whether the question needs a document listing rather than content, and can call a `list_documents` tool to check
+- **MCP server** — document search is also exposed as MCP tools (`app/mcp_server.py`), so any MCP client (Claude Desktop, another agent) can query a user's documents through the same retrieval pipeline the web app uses
+- **Multi-provider fallback** — if `OPENAI_API_KEY` is configured, the synthesis call falls over to GPT-4o-mini on a Claude provider error via LangChain's `with_fallbacks`, instead of failing the user's request outright
+- **LLM observability** — every LLM call and LangGraph node is traced in LangSmith when `LANGSMITH_TRACING=true` is set — zero code changes, just environment variables
 
 ---
 
@@ -35,13 +39,16 @@ FastAPI Backend (Railway)
       │     PDF → PyPDF2 extraction → 500-word chunks (50-word overlap)
       │     → Voyage AI voyage-3.5 embedding → pgvector storage
       │
-      └── POST /query  ──►  Multi-Agent Orchestrator (LangChain LCEL)
+      └── POST /query  ──►  Multi-Agent Orchestrator (LangGraph + LangChain)
                                 │
-                                ├── RetrievalAgent — an LCEL chain
-                                │     ├── Claude Haiku (ChatAnthropic): query expansion (3 variants)
+                                ├── RetrievalAgent — a LangGraph state machine
+                                │     ├── Claude Haiku (structured output): query expansion (3 variants)
                                 │     ├── pgvector: parallel ANN search (Runnable.abatch, 3 × top-10)
                                 │     ├── deduplicate by chunk text
-                                │     └── Voyage rerank-2: single combined rerank → top 5
+                                │     ├── Voyage rerank-2: single combined rerank → top 5
+                                │     └── Claude Haiku (structured output): grade context sufficiency
+                                │           → insufficient? widen search + retry (bounded, max 1 retry)
+                                │           → sufficient (or retries exhausted)? proceed
                                 │
                                 └── SynthesisAgent
                                       ├── Claude Sonnet 4.6 (ChatAnthropic): grounded streaming answer
@@ -59,14 +66,19 @@ PostgreSQL + pgvector (Railway)
 |---|---|
 | **Frontend** | React 18, TypeScript, react-markdown, SSE streaming |
 | **Backend** | Python 3.11, FastAPI, asyncpg, async/await throughout |
-| **Multi-Agent** | LangChain (LCEL) — RetrievalAgent chain + SynthesisAgent, via `langchain-anthropic` |
-| **LLM** | Claude Sonnet 4.6 (synthesis) · Claude Haiku 4.5 (query expansion, eval judge) |
+| **Multi-Agent** | LangGraph — RetrievalAgent state machine (self-correcting retrieval loop) + SynthesisAgent, via `langchain-anthropic` |
+| **LLM** | Claude Sonnet 4.6 (synthesis) · Claude Haiku 4.5 (query expansion, sufficiency grading, eval judge) |
+| **Structured Output** | `with_structured_output` (Pydantic) for query expansion and context-sufficiency grading |
+| **Tool Calling** | Claude `bind_tools` — model-decided `list_documents_tool`, executed server-side with session-scoped args the model never supplies |
+| **MCP** | `app/mcp_server.py` — `search_documents` / `list_documents_for_session` tools over stdio, isolated deployment (its own `requirements-mcp.txt`) |
+| **Multi-Provider Routing** | `langchain-openai` + `Runnable.with_fallbacks` — Claude Sonnet primary, GPT-4o-mini fallback, opportunistic (off if `OPENAI_API_KEY` unset) |
+| **Observability** | LangSmith — every LLM call and LangGraph node traced automatically via env vars, no code changes |
 | **Embeddings** | Voyage AI `voyage-3.5` — 1024 dimensions, document/query input types |
 | **Reranking** | Voyage AI `rerank-2` cross-encoder |
 | **Vector DB** | PostgreSQL + pgvector, IVFFlat cosine index |
 | **Privacy** | Browser-local session UUID via `localStorage` — no accounts needed |
 | **Deployment** | Vercel (frontend) · Railway Nixpacks (backend + DB) |
-| **Testing** | Pytest — 28 tests covering ingestion, retrieval, orchestration, and API |
+| **Testing** | Pytest — 39 tests covering ingestion, retrieval, orchestration (retry/escalation, tool calling, provider fallback), MCP tools, and API |
 
 ---
 
@@ -78,14 +90,17 @@ rag-agent-platform/
 │   ├── main.py          ← FastAPI app — routes, CORS, lifespan pool, session ID
 │   ├── ingestion.py     ← PDF extraction, chunking, Voyage AI embedding, pgvector insert
 │   ├── retrieval.py     ← vector_search(), rerank() — used by orchestrator
-│   ├── orchestrator.py  ← RetrievalAgent — LangChain LCEL chain (query expansion
-│   │                       + parallel retrieval via Runnable.abatch + rerank)
+│   ├── orchestrator.py  ← RetrievalAgent — LangGraph state machine (query expansion
+│   │                       + parallel retrieval via Runnable.abatch + rerank +
+│   │                       self-correcting sufficiency-grading retry loop)
 │   │                       SynthesisAgent (ChatAnthropic streaming + citations)
 │   │                       run_pipeline() — entry point for /query
 │   ├── eval.py          ← LLM-as-judge: faithfulness, answer_relevance, context_quality
 │   ├── agent.py         ← Legacy standalone Claude streaming helper — not imported
 │   │                       by the current orchestrator; kept for reference
-│   └── auth.py          ← JWT utilities (available but not required on endpoints)
+│   ├── auth.py          ← JWT utilities (available but not required on endpoints)
+│   └── mcp_server.py    ← MCP server: search_documents / list_documents_for_session
+│                           tools, stdio transport — isolated process/deployment
 ├── frontend/
 │   └── src/
 │       ├── App.tsx      ← Chat UI, eval panel, drag-and-drop, session management
@@ -94,11 +109,14 @@ rag-agent-platform/
 │   ├── test_api.py          ← API endpoint tests (health, upload, query, documents)
 │   ├── test_ingestion.py    ← Chunking pipeline tests
 │   ├── test_retrieval.py    ← Retrieval tests with mocked asyncpg + embeddings
-│   └── test_orchestrator.py ← LCEL chain tests: dedupe, fallback, SSE event format
+│   ├── test_orchestrator.py ← LangGraph node/graph tests: dedupe, retry/escalation,
+│   │                           bounded termination, tool calling, SSE event format
+│   └── test_mcp_server.py   ← MCP tool tests: delegation + session-scoping
 ├── schema.sql           ← pgvector extension, document_chunks table, IVFFlat index
 ├── railway.json         ← Nixpacks builder config + start command
 ├── vercel.json          ← Frontend build config (cd frontend && npm run build)
-├── requirements.txt
+├── requirements.txt     ← Main web app dependencies
+├── requirements-mcp.txt ← MCP server dependencies — installed separately (see below)
 └── .gitignore
 ```
 
@@ -124,17 +142,21 @@ chunk_text + embedding + session_id stored in PostgreSQL via pgvector
 
 ### Multi-Agent Query Pipeline
 
-RetrievalAgent is implemented as a LangChain **LCEL** chain — each step is a `RunnableLambda`, composed with `|` into a single `RunnableSequence` and invoked via `.ainvoke()`:
+RetrievalAgent is a **LangGraph** state machine — each step is a node, wired with `add_edge`/`add_conditional_edges`, invoked via `.ainvoke()`. The parallel search fan-out within the `parallel_search` node is a LangChain `Runnable` run via `.abatch()`. Both LLM decision steps (query expansion, sufficiency grading) use `with_structured_output` against a Pydantic schema instead of hand-parsed JSON:
 
 ```
 User question
       ↓
-RetrievalAgent  (LangChain LCEL chain)
-  ├── expand_queries   — ChatAnthropic (Haiku) generates 2 alternative phrasings
-  ├── parallel_search  — Runnable.abatch() fans the 3 queries out concurrently
-  │                       to pgvector (top 10 each = up to 30 candidates)
-  ├── dedupe           — by chunk text, keep highest cosine similarity
-  └── rerank           — Voyage rerank-2 cross-encoder on the combined pool → top 5
+RetrievalAgent  (LangGraph state machine)
+  ├── expand_queries     — Haiku (structured output) generates 2 alternative phrasings
+  ├── parallel_search    — Runnable.abatch() fans the queries out concurrently to
+  │                         pgvector; widens top_k automatically on a retry
+  ├── dedupe              — by chunk text, keep highest cosine similarity
+  ├── rerank              — Voyage rerank-2 cross-encoder on the combined pool → top 5
+  └── grade_sufficiency   — Haiku (structured output) judges: does this context
+        │                   likely answer the question?
+        ├── insufficient & attempts < 2 → loop back to parallel_search, widened
+        └── sufficient, or attempts exhausted → proceed with best-effort context
       ↓
 SynthesisAgent
   ├── ChatAnthropic (Claude Sonnet 4.6) streams a grounded markdown answer via SSE
@@ -142,6 +164,8 @@ SynthesisAgent
       ↓
 Frontend renders streaming tokens + source citation chips
 ```
+
+This self-correction branch is deliberately small — one bounded retry, not an open-ended agent loop — but it's the same escalate-and-retry shape as a decision engine that widens its search before giving up, rather than a fixed linear pipeline.
 
 ### Eval Harness
 
@@ -194,6 +218,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 VOYAGE_API_KEY=pa-...
 DATABASE_URL=postgresql://user:password@host:port/dbname
 SECRET_KEY=your-secret-key
+
+# Optional — enables the OpenAI fallback on the synthesis call; omit to run
+# single-provider (ChatOpenAI requires billing/credits on the OpenAI account)
+OPENAI_API_KEY=sk-...
+
+# Optional — enables LangSmith tracing with zero code changes
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=rag-agent-platform
 ```
 
 Set up the database:
@@ -241,6 +274,33 @@ All endpoints read the `X-Session-ID` header to scope data per browser session.
 
 ---
 
+## MCP Server
+
+`app/mcp_server.py` exposes document search as MCP tools over stdio, so any
+MCP client (Claude Desktop, another agent) can query a user's documents —
+reusing the exact same pgvector + Voyage rerank pipeline as `/query`, not a
+reimplementation.
+
+| Tool | Description |
+|---|---|
+| `search_documents(session_id, query, top_k=5)` | Two-stage retrieval (pgvector ANN + Voyage rerank), same as `/query` |
+| `list_documents_for_session(session_id)` | List a session's uploaded documents |
+
+`session_id` scopes every call — a given MCP server instance only ever sees
+the documents belonging to the session it's configured with.
+
+**Run it** (separate environment from the main app — see rationale below):
+
+```bash
+pip install -r requirements-mcp.txt
+DATABASE_URL=postgresql://user:password@host:port/dbname python -m app.mcp_server
+```
+
+**Why a separate `requirements-mcp.txt` and process, not an in-process addition to `main.py`?**
+Installing the `mcp` SDK upgrades Starlette to a 1.x release, which conflicts with FastAPI 0.115.0's pin (`starlette<0.39.0,>=0.37.2`) — discovered while building this, not assumed. Installing both in the same environment risks breaking the live FastAPI app's dependency tree for a feature that doesn't need to share a process with it anyway (MCP clients spawn their own subprocess over stdio). Isolating it into its own requirements file and entry point avoids that risk entirely.
+
+---
+
 ## Key Engineering Decisions
 
 **Why two-stage retrieval (vector search + reranker)?**
@@ -249,8 +309,23 @@ ANN vector search is O(log n) and very fast but uses bi-encoders that can miss n
 **Why query expansion?**
 A single embedding of the user's question might miss relevant chunks phrased differently. Generating 2 alternative phrasings with Claude Haiku and searching all 3 in parallel dramatically increases recall with minimal latency cost (the searches run concurrently).
 
-**Why LangChain (LCEL) for orchestration, and not LangGraph or raw SDK calls?**
-The retrieval pipeline is a linear sequence with one fan-out step (parallel search across query variants) — exactly what LCEL's `Runnable` composition (`|`, `.abatch()`) is for. Each step (`expand_queries`, `parallel_search`, `rerank`) is an independent, testable `RunnableLambda`; `tests/test_orchestrator.py` mocks the LLM and retrieval boundaries to verify the chain's wiring and exact SSE output without hitting real APIs. LangGraph's explicit state-graph model would add more structure than a single linear chain needs; the vector store itself stays a direct `asyncpg` + pgvector query (not `langchain_postgres.PGVector`) since the hand-tuned SQL and session/document filtering were already working well — LangChain's value here is in the orchestration layer, not replacing a working data layer.
+**Why LangGraph for the retrieval agent, and not a linear LCEL chain or raw SDK calls?**
+The retrieval pipeline isn't purely linear — once a sufficiency-grading step exists, there's a real branch: retry with a widened search, or proceed. That's exactly what LangGraph's explicit state graph (nodes + conditional edges) models, and a plain LCEL `|` chain can't express a loop. The pipeline started as an LCEL chain (still true for the `parallel_search` node's fan-out, which uses `Runnable.abatch()`); LangGraph was introduced specifically when a real decision point — "is this context good enough?" — was added. Each node is an independent, testable async function; `tests/test_orchestrator.py` mocks the LLM and retrieval boundaries to verify the graph's wiring, the retry/escalation branch, its bounded termination, and the exact SSE output, without hitting real APIs. The vector store itself stays a direct `asyncpg` + pgvector query (not `langchain_postgres.PGVector`) since the hand-tuned SQL and session/document filtering were already working well — LangChain/LangGraph's value here is in the orchestration and decision layer, not replacing a working data layer.
+
+**Why does the tool-calling design never let the model supply session parameters?**
+`list_documents_tool`'s schema takes zero arguments — no `user_id`, no `session_id`. The model can only request *that* the tool runs; the server decides what it runs *with*, injecting the real authenticated session's `user_id`/`pool` when it executes the call. That means a tool call can't become a cross-session data leak no matter what the model is prompted, confused, or adversarially steered into asking for — the blast radius of a bad tool-call decision is "the wrong tool ran," never "the wrong user's data came back." `tests/test_orchestrator.py` asserts this directly: `list_documents` is called with the real session's arguments, not anything parsed from the model's output.
+
+**Why only the synthesis call gets a provider fallback, not every LLM call?**
+Query expansion, sufficiency grading, and the tool-routing decision already degrade gracefully on their own: each wraps its call in a try/except that falls back to a safe default (skip expansion, assume sufficient, skip the tool) rather than failing the request. The synthesis call has no such fallback — if it fails, the user gets nothing. That's the one call where a second provider earns its keep, so `_build_sonnet()` wraps it with `ChatAnthropic.with_fallbacks([ChatOpenAI(...)])`, opportunistically: if `OPENAI_API_KEY` isn't set, the function returns the plain Claude model and the app behaves exactly as before (verified in `tests/test_orchestrator.py` — `ChatOpenAI` raises at *construction* time if its key is missing, unlike `ChatAnthropic`, so this guard also prevents a missing key from crashing the whole app's import).
+
+**Why `gpt-4o-mini` as the fallback, not `gpt-4o`?** Partly a real constraint, partly a deliberate choice. Verifying the fallback path live (not just offline) surfaced two separate, real OpenAI errors in sequence, each worth knowing about on its own:
+1. `insufficient_quota` — the account had no billing configured yet. Fixed by adding credits.
+2. After that, `gpt-4o` specifically returned a `403 model_not_found` — this project's account didn't have usage-tier access to that model, even with billing active (OpenAI gates some models behind spend history). `gpt-4o-mini` worked immediately.
+
+Both times, `with_fallbacks` reported the *first* (Claude-side) error, not the fallback's actual failure reason — worth knowing before relying on it in production, since the error message you see may not be the one that tells you what to fix; I had to test the fallback model directly, in isolation, to find the real cause each time. Once both were resolved, `gpt-4o-mini` turned out to be the right choice anyway, not just the available one: fast and cheap is the right trade-off for an emergency fallback, not top-tier quality. Verified end-to-end against the real Anthropic/OpenAI APIs: a deliberately broken Claude model name now correctly falls through `with_fallbacks` to a real `gpt-4o-mini` response.
+
+**Why LangSmith, and how do you know it's actually capturing anything?**
+Because every model and chain here is a LangChain `Runnable`, LangSmith tracing needed zero code changes — just `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` as environment variables. Verified by actually querying the LangSmith API after a live run rather than assuming the env vars were enough: the trace captured the individual LangGraph nodes by name (`grade_sufficiency`, `_route_after_grade`), the `RunnableWithFallbacks` wrapper, and the underlying `ChatAnthropic` calls — full visibility into the decision path, not just a single opaque request/response.
 
 **Why LLM-as-judge for evaluation?**
 Reference-free evaluation — no ground-truth answers needed. Claude Haiku reads the question, answer, and retrieved context and scores faithfulness and relevance independently. This mirrors the RAGAS framework approach and is cheap enough (Haiku) to run on every eval request.
