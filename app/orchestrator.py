@@ -28,8 +28,8 @@ LCEL owns the *parallel execution* within a single node.
 SynthesisAgent streams a grounded markdown answer via ChatAnthropic (Claude
 Sonnet), with an opportunistic OpenAI fallback via `with_fallbacks` — if
 OPENAI_API_KEY is configured, a provider outage/error on the primary call
-falls over to GPT-4o rather than failing the user's request outright. The
-fallback is optional, not required: if OPENAI_API_KEY isn't set, the app
+falls over to GPT-4o-mini rather than failing the user's request outright.
+The fallback is optional, not required: if OPENAI_API_KEY isn't set, the app
 runs exactly as before, single-provider. Before synthesizing, a cheap Haiku
 call with a bound tool (list_documents_tool) decides — the model's choice,
 not a keyword/intent heuristic — whether the question needs a document
@@ -59,7 +59,10 @@ from app.retrieval import vector_search, rerank, list_documents
 
 _haiku = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=150)
 
-OPENAI_FALLBACK_MODEL = "gpt-4o"
+OPENAI_FALLBACK_MODEL = "gpt-4o-mini"  # see rationale in README: gpt-4o needed a
+# usage tier this account's project didn't have (found via a live 403 test, not
+# assumed); gpt-4o-mini is also the more defensible emergency-fallback choice
+# anyway — fast and cheap, appropriate when the primary provider is already down.
 
 
 def _build_sonnet():
