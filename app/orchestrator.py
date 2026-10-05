@@ -25,15 +25,19 @@ The per-query-variant search fan-out is still a LangChain Runnable, run
 concurrently via `.abatch()` — LangGraph owns the *decision* structure,
 LCEL owns the *parallel execution* within a single node.
 
-SynthesisAgent streams a grounded markdown answer via ChatAnthropic. Before
-synthesizing, a cheap Haiku call with a bound tool (list_documents_tool)
-decides — the model's choice, not a keyword/intent heuristic — whether the
-question needs a document listing rather than document content (e.g. "what
-files do I have?"). If it calls the tool, the server executes it with the
-real session's user_id/pool (the model never sees or controls those — it
-can only request the tool, not supply session parameters), and the result is
-folded into the synthesis context. SynthesisAgent then emits [CITATIONS] and
-[DONE] SSE events.
+SynthesisAgent streams a grounded markdown answer via ChatAnthropic (Claude
+Sonnet), with an opportunistic OpenAI fallback via `with_fallbacks` — if
+OPENAI_API_KEY is configured, a provider outage/error on the primary call
+falls over to GPT-4o rather than failing the user's request outright. The
+fallback is optional, not required: if OPENAI_API_KEY isn't set, the app
+runs exactly as before, single-provider. Before synthesizing, a cheap Haiku
+call with a bound tool (list_documents_tool) decides — the model's choice,
+not a keyword/intent heuristic — whether the question needs a document
+listing rather than document content (e.g. "what files do I have?"). If it
+calls the tool, the server executes it with the real session's user_id/pool
+(the model never sees or controls those — it can only request the tool, not
+supply session parameters), and the result is folded into the synthesis
+context. SynthesisAgent then emits [CITATIONS] and [DONE] SSE events.
 
 run_pipeline() wires them together and is passed directly to FastAPI's
 StreamingResponse. Public API (RetrievalAgent.retrieve, run_pipeline) is
@@ -41,6 +45,7 @@ unchanged — only the internals are LangGraph/LangChain-orchestrated.
 """
 
 import json
+import os
 from typing import AsyncGenerator, TypedDict
 
 from langchain_anthropic import ChatAnthropic
@@ -53,7 +58,28 @@ from pydantic import BaseModel, Field
 from app.retrieval import vector_search, rerank, list_documents
 
 _haiku = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=150)
-_sonnet = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=1024, streaming=True)
+
+OPENAI_FALLBACK_MODEL = "gpt-4o"
+
+
+def _build_sonnet():
+    """Claude Sonnet, with an OpenAI fallback if OPENAI_API_KEY is configured.
+
+    ChatOpenAI raises at *construction* time if its key is missing (unlike
+    ChatAnthropic, which validates lazily on first call) — this guard is what
+    keeps an unset OPENAI_API_KEY from crashing this module's import, and
+    therefore the whole app, in any environment that doesn't have it (a
+    teammate's local setup, or before it's added to a deploy target).
+    """
+    primary = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=1024, streaming=True)
+    if not os.getenv("OPENAI_API_KEY"):
+        return primary
+    from langchain_openai import ChatOpenAI  # imported here so it's only required when used
+    fallback = ChatOpenAI(model=OPENAI_FALLBACK_MODEL, max_tokens=1024, streaming=True)
+    return primary.with_fallbacks([fallback])
+
+
+_sonnet = _build_sonnet()
 
 MAX_RETRIEVAL_ATTEMPTS = 2  # initial pass + 1 widened retry — bounds latency/cost
 MAX_SEARCH_TOP_K = 25       # cap on how far a retry can widen the candidate pool

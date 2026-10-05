@@ -19,6 +19,8 @@ An end-to-end **AI-powered document Q&A system** with LangChain-orchestrated mul
 - **Drag-and-drop upload** — drag PDFs anywhere onto the page
 - **Agentic tool calling** — before answering, the model (not a keyword heuristic) decides whether the question needs a document listing rather than content, and can call a `list_documents` tool to check
 - **MCP server** — document search is also exposed as MCP tools (`app/mcp_server.py`), so any MCP client (Claude Desktop, another agent) can query a user's documents through the same retrieval pipeline the web app uses
+- **Multi-provider fallback** — if `OPENAI_API_KEY` is configured, the synthesis call falls over to GPT-4o on a Claude provider error via LangChain's `with_fallbacks`, instead of failing the user's request outright
+- **LLM observability** — every LLM call and LangGraph node is traced in LangSmith when `LANGSMITH_TRACING=true` is set — zero code changes, just environment variables
 
 ---
 
@@ -69,12 +71,14 @@ PostgreSQL + pgvector (Railway)
 | **Structured Output** | `with_structured_output` (Pydantic) for query expansion and context-sufficiency grading |
 | **Tool Calling** | Claude `bind_tools` — model-decided `list_documents_tool`, executed server-side with session-scoped args the model never supplies |
 | **MCP** | `app/mcp_server.py` — `search_documents` / `list_documents_for_session` tools over stdio, isolated deployment (its own `requirements-mcp.txt`) |
+| **Multi-Provider Routing** | `langchain-openai` + `Runnable.with_fallbacks` — Claude Sonnet primary, GPT-4o fallback, opportunistic (off if `OPENAI_API_KEY` unset) |
+| **Observability** | LangSmith — every LLM call and LangGraph node traced automatically via env vars, no code changes |
 | **Embeddings** | Voyage AI `voyage-3.5` — 1024 dimensions, document/query input types |
 | **Reranking** | Voyage AI `rerank-2` cross-encoder |
 | **Vector DB** | PostgreSQL + pgvector, IVFFlat cosine index |
 | **Privacy** | Browser-local session UUID via `localStorage` — no accounts needed |
 | **Deployment** | Vercel (frontend) · Railway Nixpacks (backend + DB) |
-| **Testing** | Pytest — 37 tests covering ingestion, retrieval, orchestration (incl. retry/escalation + tool calling), MCP tools, and API |
+| **Testing** | Pytest — 39 tests covering ingestion, retrieval, orchestration (retry/escalation, tool calling, provider fallback), MCP tools, and API |
 
 ---
 
@@ -214,6 +218,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 VOYAGE_API_KEY=pa-...
 DATABASE_URL=postgresql://user:password@host:port/dbname
 SECRET_KEY=your-secret-key
+
+# Optional — enables the OpenAI fallback on the synthesis call; omit to run
+# single-provider (ChatOpenAI requires billing/credits on the OpenAI account)
+OPENAI_API_KEY=sk-...
+
+# Optional — enables LangSmith tracing with zero code changes
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=rag-agent-platform
 ```
 
 Set up the database:
@@ -301,6 +314,12 @@ The retrieval pipeline isn't purely linear — once a sufficiency-grading step e
 
 **Why does the tool-calling design never let the model supply session parameters?**
 `list_documents_tool`'s schema takes zero arguments — no `user_id`, no `session_id`. The model can only request *that* the tool runs; the server decides what it runs *with*, injecting the real authenticated session's `user_id`/`pool` when it executes the call. That means a tool call can't become a cross-session data leak no matter what the model is prompted, confused, or adversarially steered into asking for — the blast radius of a bad tool-call decision is "the wrong tool ran," never "the wrong user's data came back." `tests/test_orchestrator.py` asserts this directly: `list_documents` is called with the real session's arguments, not anything parsed from the model's output.
+
+**Why only the synthesis call gets a provider fallback, not every LLM call?**
+Query expansion, sufficiency grading, and the tool-routing decision already degrade gracefully on their own: each wraps its call in a try/except that falls back to a safe default (skip expansion, assume sufficient, skip the tool) rather than failing the request. The synthesis call has no such fallback — if it fails, the user gets nothing. That's the one call where a second provider earns its keep, so `_build_sonnet()` wraps it with `ChatAnthropic.with_fallbacks([ChatOpenAI(...)])`, opportunistically: if `OPENAI_API_KEY` isn't set, the function returns the plain Claude model and the app behaves exactly as before (verified in `tests/test_orchestrator.py` — `ChatOpenAI` raises at *construction* time if its key is missing, unlike `ChatAnthropic`, so this guard also prevents a missing key from crashing the whole app's import). Verified live end-to-end against the real Anthropic/OpenAI APIs, not just mocks: a deliberately broken Claude model name correctly triggered the fallback path in `with_fallbacks`, and surfaced a real, separate finding in the process — the fallback itself failed because the OpenAI account had no billing configured (`insufficient_quota`), which `with_fallbacks` reports by re-raising the *original* (Claude-side) error, not the fallback's — worth knowing before relying on it in production, since the error message you see may not be the one that actually determines your fix.
+
+**Why LangSmith, and how do you know it's actually capturing anything?**
+Because every model and chain here is a LangChain `Runnable`, LangSmith tracing needed zero code changes — just `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` as environment variables. Verified by actually querying the LangSmith API after a live run rather than assuming the env vars were enough: the trace captured the individual LangGraph nodes by name (`grade_sufficiency`, `_route_after_grade`), the `RunnableWithFallbacks` wrapper, and the underlying `ChatAnthropic` calls — full visibility into the decision path, not just a single opaque request/response.
 
 **Why LLM-as-judge for evaluation?**
 Reference-free evaluation — no ground-truth answers needed. Claude Haiku reads the question, answer, and retrieved context and scores faithfulness and relevance independently. This mirrors the RAGAS framework approach and is cheap enough (Haiku) to run on every eval request.

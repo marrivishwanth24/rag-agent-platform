@@ -11,8 +11,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from langchain_anthropic import ChatAnthropic
+from langchain_core.runnables import RunnableWithFallbacks
 
-from app.orchestrator import RetrievalAgent, SynthesisAgent, run_pipeline
+from app.orchestrator import RetrievalAgent, SynthesisAgent, _build_sonnet, run_pipeline
 
 CHUNK_A = {"chunk_text": "alpha", "page_num": 1, "filename": "doc.pdf", "similarity": 0.9}
 CHUNK_B = {"chunk_text": "beta", "page_num": 2, "filename": "doc.pdf", "similarity": 0.8}
@@ -216,3 +218,26 @@ async def test_synthesis_agent_folds_tool_result_into_context():
 
     user_message_text = captured["messages"][1].content
     assert "Available documents: a.pdf, b.pdf" in user_message_text
+
+
+# ── Multi-provider routing ───────────────────────────────────────────────────
+
+def test_build_sonnet_without_openai_key_returns_plain_claude(monkeypatch):
+    """No OPENAI_API_KEY configured -> single-provider, unchanged behavior."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    model = _build_sonnet()
+
+    assert isinstance(model, ChatAnthropic)
+    assert not isinstance(model, RunnableWithFallbacks)
+
+
+def test_build_sonnet_with_openai_key_wraps_with_fallback(monkeypatch):
+    """OPENAI_API_KEY present -> Claude primary, OpenAI fallback via with_fallbacks."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-construction-only-not-a-real-key")
+
+    model = _build_sonnet()
+
+    assert isinstance(model, RunnableWithFallbacks)
+    assert isinstance(model.runnable, ChatAnthropic)
+    assert len(model.fallbacks) == 1
