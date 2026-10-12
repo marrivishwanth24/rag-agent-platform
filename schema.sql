@@ -9,11 +9,19 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Document chunks with 1024-dim Voyage AI embeddings
+-- Document chunks with 1024-dim Voyage AI embeddings.
+--
+-- user_id is a browser-generated session UUID (see app/main.py:get_session_id),
+-- not a row in `users` -- the main app is anonymous/session-based by design
+-- (see README: "no login required"). `users` only exists for the optional
+-- /auth/* endpoints, which the core upload/query flow never touches. A FK
+-- to users(id) here would be stale and incorrect: it would reject every
+-- anonymous session's upload unless that session also happened to register
+-- an account, which the app never asks it to do.
 CREATE TABLE IF NOT EXISTS document_chunks (
     id          TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
-    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL,
     filename    TEXT NOT NULL,
     page_num    INTEGER NOT NULL,
     chunk_text  TEXT NOT NULL,
